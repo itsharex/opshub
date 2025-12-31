@@ -168,6 +168,12 @@ class KubernetesPlugin implements Plugin {
             meta: { title: '命名空间' },
           },
           {
+            path: 'roles',
+            name: 'K8sRoles',
+            component: () => import('@/views/kubernetes/Roles.vue'),
+            meta: { title: '角色管理' },
+          },
+          {
             path: 'network',
             name: 'K8sNetwork',
             component: () => import('@/views/kubernetes/Network.vue'),

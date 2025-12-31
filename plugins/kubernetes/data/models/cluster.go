@@ -1,0 +1,40 @@
+package models
+
+import "time"
+
+// Cluster 集群模型
+type Cluster struct {
+	ID          uint      `gorm:"primarykey" json:"id"`
+	CreatedAt   time.Time `gorm:"type:datetime" json:"createdAt"`
+	UpdatedAt   time.Time `gorm:"type:datetime" json:"updatedAt"`
+	Name        string    `gorm:"size:100;not null;uniqueIndex" json:"name"`          // 集群名称
+	Alias       string    `gorm:"size:100" json:"alias"`                               // 集群别名
+	APIEndpoint string    `gorm:"size:500;not null" json:"apiEndpoint"`                 // API Server 地址
+	KubeConfig  string    `gorm:"type:text;not null" json:"kubeConfig"`                 // KubeConfig 内容（加密存储）
+	Version     string    `gorm:"size:50" json:"version"`                              // Kubernetes 版本
+	Status      int       `gorm:"default:1" json:"status"`                             // 状态: 1-正常 2-连接失败 3-不可用
+	Region      string    `gorm:"size:100" json:"region"`                              // 区域
+	Provider    string    `gorm:"size:50" json:"provider"`                             // 云服务商: aws/aliyun/tencent/native
+	Description string    `gorm:"size:500" json:"description"`                         // 描述
+	CreatedBy   uint      `json:"createdBy"`                                           // 创建人ID
+}
+
+// TableName 指定表名
+func (Cluster) TableName() string {
+	return "k8s_clusters"
+}
+
+// ClusterStatus 集群状态常量
+const (
+	ClusterStatusNormal   = 1 // 正常
+	ClusterStatusFailed   = 2 // 连接失败
+	ClusterStatusDisabled = 3 // 不可用
+)
+
+// ClusterProvider 云服务商常量
+const (
+	ProviderNative  = "native"  // 自建集群
+	ProviderAWS     = "aws"     // AWS
+	ProviderAliyun  = "aliyun"  // 阿里云
+	ProviderTencent = "tencent" // 腾讯云
+)

@@ -128,8 +128,11 @@
       </el-table-column>
       <el-table-column prop="description" label="备注" min-width="180" show-overflow-tooltip />
       <el-table-column prop="createdAt" label="创建时间" width="200" />
-      <el-table-column label="操作" width="140" fixed="right">
+      <el-table-column label="操作" width="220" fixed="right">
         <template #default="{ row }">
+          <el-button link type="primary" @click="handleAuthorize(row)" title="授权">
+            <el-icon size="18"><Lock /></el-icon>
+          </el-button>
           <el-button link type="primary" @click="handleSync(row)" title="同步">
             <el-icon size="18"><Refresh /></el-icon>
           </el-button>
@@ -362,6 +365,125 @@
         <span>请妥善保管集群凭证，不要泄露给他人</span>
       </div>
     </el-dialog>
+
+    <!-- 授权对话框 -->
+    <el-dialog
+      v-model="authorizeDialogVisible"
+      title="集群授权"
+      width="900px"
+      class="authorize-dialog"
+    >
+      <el-tabs v-model="activeAuthTab" type="border-card">
+        <!-- 连接信息 -->
+        <el-tab-pane label="连接信息" name="connection">
+          <div class="connection-info">
+            <div class="info-section">
+              <div class="section-title">
+                <el-icon><Connection /></el-icon>
+                <span>集群连接信息</span>
+              </div>
+              <el-descriptions :column="2" border size="default" style="margin-top: 16px;">
+                <el-descriptions-item label="集群名称">{{ currentCluster?.name }}</el-descriptions-item>
+                <el-descriptions-item label="别名">{{ currentCluster?.alias || '-' }}</el-descriptions-item>
+                <el-descriptions-item label="API Endpoint">{{ currentCluster?.apiEndpoint }}</el-descriptions-item>
+                <el-descriptions-item label="版本">{{ currentCluster?.version }}</el-descriptions-item>
+              </el-descriptions>
+            </div>
+
+            <div class="credential-section">
+              <div class="section-header">
+                <div class="section-title">
+                  <el-icon><Key /></el-icon>
+                  <span>凭据管理</span>
+                </div>
+                <div v-if="!generatedKubeConfig">
+                  <el-button
+                    type="primary"
+                    :icon="Download"
+                    @click="handleApplyCredential"
+                    :loading="credentialLoading"
+                    size="default"
+                  >
+                    凭据申请
+                  </el-button>
+                </div>
+                <div v-else>
+                  <el-button
+                    type="danger"
+                    :icon="Delete"
+                    @click="handleRevokeCredential"
+                    :loading="revokeLoading"
+                    size="default"
+                  >
+                    吊销凭据
+                  </el-button>
+                </div>
+              </div>
+
+              <div v-if="generatedKubeConfig" class="kubeconfig-display">
+                <div class="kubeconfig-header">
+                  <span style="font-weight: 500; font-size: 14px;">生成的 KubeConfig 凭据</span>
+                  <el-button
+                    type="primary"
+                    :icon="DocumentCopy"
+                    @click="handleCopyKubeConfig"
+                    size="small"
+                  >
+                    复制
+                  </el-button>
+                </div>
+                <el-input
+                  v-model="generatedKubeConfig"
+                  type="textarea"
+                  :rows="10"
+                  readonly
+                  class="kubeconfig-textarea"
+                />
+                <div class="code-tip">
+                  <el-icon><Warning /></el-icon>
+                  <span>此凭据文件包含您的集群访问权限，请妥善保管，不要泄露给他人</span>
+                </div>
+              </div>
+
+              <div v-else class="no-credential-tip">
+                <el-empty description="暂无凭据，请点击上方按钮申请">
+                  <template #image>
+                    <el-icon :size="60" color="#909399"><Key /></el-icon>
+                  </template>
+                </el-empty>
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <!-- 用户 -->
+        <el-tab-pane label="用户" name="users">
+          <div class="tab-content">
+            <ClusterAuthDialog
+              v-if="currentCluster"
+              :cluster="currentCluster"
+              :model-value="true"
+              :credential-users="clusterCredentialUsers"
+              @refresh="loadClusterCredentials"
+            />
+            <el-empty v-else description="请先选择集群" />
+          </div>
+        </el-tab-pane>
+
+        <!-- 角色 -->
+        <el-tab-pane label="角色" name="roles">
+          <div class="tab-content">
+            <el-empty description="角色管理功能，请在用户标签页管理" />
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="authorizeDialogVisible = false" size="large">关闭</el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -381,6 +503,7 @@ import {
   Plus,
   Edit,
   Delete,
+  Lock,
   DocumentCopy,
   Download,
   Warning
@@ -393,12 +516,25 @@ import {
   testClusterConnection,
   getClusterDetail,
   getClusterConfig,
-  type Cluster
+  generateKubeConfig,
+  revokeKubeConfig,
+  getClusterCredentialUsers,
+  getExistingKubeConfig,
+  type Cluster,
+  type CredentialUser
 } from '@/api/kubernetes'
+import ClusterAuthDialog from './components/ClusterAuthDialog.vue'
 
 const loading = ref(false)
 const dialogVisible = ref(false)
 const configDialogVisible = ref(false)
+const authorizeDialogVisible = ref(false)
+const showRoleBindingDialog = ref(false)
+const activeAuthTab = ref('connection')
+const credentialLoading = ref(false)
+const revokeLoading = ref(false)
+const generatedKubeConfig = ref('')
+const currentCredentialUsername = ref('')
 const submitLoading = ref(false)
 const formRef = ref<FormInstance>()
 const fileInputRef = ref<HTMLInputElement>()
@@ -414,6 +550,7 @@ const configLineCount = ref(1)
 const router = useRouter()
 
 const clusterList = ref<Cluster[]>([])
+const clusterCredentialUsers = ref<CredentialUser[]>([])
 
 // 搜索表单
 const searchForm = reactive({
@@ -812,15 +949,155 @@ const handleDownloadConfig = () => {
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   const filename = `kubeconfig-${currentCluster.value?.name || 'cluster'}.conf`
-
   link.href = url
   link.download = filename
-  document.body.appendChild(link)
   link.click()
-  document.body.removeChild(link)
   URL.revokeObjectURL(url)
-
   ElMessage.success('下载成功')
+}
+
+// 加载集群凭据用户列表
+const loadClusterCredentials = async () => {
+  if (!currentCluster.value) return
+
+  try {
+    const users = await getClusterCredentialUsers(currentCluster.value.id)
+    clusterCredentialUsers.value = users
+  } catch (error: any) {
+    console.error('加载凭据用户失败:', error)
+    ElMessage.error(error.response?.data?.message || '加载凭据用户失败')
+  }
+}
+
+// 打开授权对话框
+const handleAuthorize = async (row: Cluster) => {
+  try {
+    const cluster = await getClusterDetail(row.id)
+    currentCluster.value = cluster
+
+    authorizeDialogVisible.value = true
+    activeAuthTab.value = 'connection'
+
+    // 先尝试从后端API获取用户现有的kubeconfig
+    try {
+      const result = await getExistingKubeConfig(cluster.id)
+      generatedKubeConfig.value = result.kubeconfig
+      currentCredentialUsername.value = result.username
+
+      // 保存到localStorage
+      const username = getCurrentUsername()
+      const storageKey = `kubeconfig_${cluster.id}_${username}`
+      const usernameKey = `kubeconfig_username_${cluster.id}_${username}`
+      localStorage.setItem(storageKey, result.kubeconfig)
+      localStorage.setItem(usernameKey, result.username)
+    } catch (error: any) {
+      // 如果是404错误（用户尚未申请凭据），清空显示
+      if (error.response?.status === 404) {
+        generatedKubeConfig.value = ''
+        currentCredentialUsername.value = ''
+      } else {
+        // 其他错误，也清空显示
+        console.error('获取现有kubeconfig失败:', error)
+        generatedKubeConfig.value = ''
+        currentCredentialUsername.value = ''
+      }
+    }
+
+    // 加载凭据用户列表（从后端API获取）
+    await loadClusterCredentials()
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.message || '获取集群信息失败')
+  }
+}
+
+// 申请凭据
+const handleApplyCredential = async () => {
+  if (!currentCluster.value) return
+
+  try {
+    credentialLoading.value = true
+
+    // 获取当前用户名
+    const username = getCurrentUsername()
+
+    // 调用后端API生成kubeconfig
+    const result = await generateKubeConfig(currentCluster.value.id, username)
+    generatedKubeConfig.value = result.kubeconfig
+    currentCredentialUsername.value = result.username
+
+    // 保存到 localStorage
+    const storageKey = `kubeconfig_${currentCluster.value.id}_${username}`
+    const usernameKey = `kubeconfig_username_${currentCluster.value.id}_${username}`
+    localStorage.setItem(storageKey, result.kubeconfig)
+    localStorage.setItem(usernameKey, result.username)
+
+    ElMessage.success('凭据申请成功')
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.message || '凭据申请失败')
+  } finally {
+    credentialLoading.value = false
+  }
+}
+
+// 吊销凭据
+const handleRevokeCredential = async () => {
+  if (!currentCluster.value || !currentCredentialUsername.value) return
+
+  try {
+    await ElMessageBox.confirm('确定要吊销该凭据吗？吊销后将无法使用该 KubeConfig 访问集群。', '提示', {
+      type: 'warning',
+      confirmButtonText: '确定',
+      cancelButtonText: '取消'
+    })
+
+    revokeLoading.value = true
+
+    // 调用后端API撤销kubeconfig
+    await revokeKubeConfig(currentCluster.value.id, currentCredentialUsername.value)
+
+    // 清空凭据
+    generatedKubeConfig.value = ''
+    currentCredentialUsername.value = ''
+
+    // 清除 localStorage 中的凭据
+    const username = getCurrentUsername()
+    const storageKey = `kubeconfig_${currentCluster.value.id}_${username}`
+    const usernameKey = `kubeconfig_username_${currentCluster.value.id}_${username}`
+    localStorage.removeItem(storageKey)
+    localStorage.removeItem(usernameKey)
+
+    ElMessage.success('凭据吊销成功')
+  } catch (error: any) {
+    if (error !== 'cancel') {
+      ElMessage.error(error.response?.data?.message || '凭据吊销失败')
+    }
+  } finally {
+    revokeLoading.value = false
+  }
+}
+
+// 获取当前用户名
+const getCurrentUsername = () => {
+  const userStr = localStorage.getItem('user')
+  if (userStr) {
+    try {
+      const user = JSON.parse(userStr)
+      return user.username || 'opshub-user'
+    } catch {
+      return 'opshub-user'
+    }
+  }
+  return 'opshub-user'
+}
+
+// 复制生成的kubeconfig
+const handleCopyKubeConfig = async () => {
+  try {
+    await navigator.clipboard.writeText(generatedKubeConfig.value)
+    ElMessage.success('复制成功')
+  } catch (error) {
+    ElMessage.error('复制失败，请手动复制')
+  }
 }
 
 // 关闭对话框
@@ -875,6 +1152,13 @@ const getProviderText = (provider: string) => {
 
 onMounted(() => {
   loadClusters()
+})
+
+// 监听标签页切换，当切换到用户标签时加载凭据用户列表
+watch(activeAuthTab, async (newTab) => {
+  if (newTab === 'users' && currentCluster.value) {
+    await loadClusterCredentials()
+  }
 })
 </script>
 
@@ -1063,5 +1347,67 @@ onMounted(() => {
 
 .cluster-name-link:hover {
   color: #409EFF;
+}
+
+/* 授权对话框样式 */
+.authorize-dialog :deep(.el-dialog__body) {
+  padding: 0;
+}
+
+.connection-info {
+  padding: 20px;
+}
+
+.info-section {
+  margin-bottom: 24px;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  font-size: 15px;
+  color: #303133;
+  margin-bottom: 12px;
+}
+
+.credential-section {
+  margin-top: 24px;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.kubeconfig-display {
+  margin-top: 16px;
+}
+
+.kubeconfig-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.kubeconfig-textarea :deep(.el-textarea__inner) {
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  background-color: #f5f7fa;
+}
+
+.no-credential-tip {
+  padding: 40px 0;
+  text-align: center;
+}
+
+.tab-content {
+  padding: 40px;
+  text-align: center;
 }
 </style>

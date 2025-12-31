@@ -281,7 +281,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -427,7 +427,23 @@ const loadNetworkInfo = async () => {
 const loadComponentInfo = async () => {
   try {
     const data = await getClusterComponentInfo(clusterId.value)
-    componentInfo.value = data
+    console.log('[ClusterDetail] 组件信息响应:', data)
+    console.log('[ClusterDetail] components 数量:', data?.components?.length || 0)
+    console.log('[ClusterDetail] components 详情:', data?.components)
+
+    // 手动触发响应式更新
+    componentInfo.value = {
+      components: data?.components || [],
+      runtime: data?.runtime || { containerRuntime: '', version: '' },
+      storage: data?.storage || []
+    }
+
+    console.log('[ClusterDetail] componentInfo.value:', componentInfo.value)
+    console.log('[ClusterDetail] componentInfo.value.components.length:', componentInfo.value.components.length)
+
+    // 强制触发重新渲染
+    await nextTick()
+    console.log('[ClusterDetail] nextTick 后 components.length:', componentInfo.value.components.length)
   } catch (error: any) {
     console.error('加载组件信息失败:', error)
     ElMessage.error(error.response?.data?.message || '加载组件信息失败')

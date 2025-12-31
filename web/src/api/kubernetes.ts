@@ -280,3 +280,227 @@ export function getClusterComponentInfo(clusterId: number) {
     params: { clusterId }
   })
 }
+
+/**
+ * 生成集群 KubeConfig 凭据
+ */
+export function generateKubeConfig(clusterId: number, username: string) {
+  return request<{ kubeconfig: string; username: string }>({
+    url: '/api/v1/plugins/kubernetes/clusters/kubeconfig',
+    method: 'post',
+    data: { clusterId, username }
+  })
+}
+
+/**
+ * 吊销集群 KubeConfig 凭据
+ */
+export function revokeKubeConfig(clusterId: number, username: string) {
+  return request({
+    url: '/api/v1/plugins/kubernetes/clusters/kubeconfig',
+    method: 'delete',
+    data: { clusterId, username }
+  })
+}
+
+// ==================== Kubernetes 角色相关 ====================
+
+export interface Role {
+  name: string
+  namespace?: string
+  labels: Record<string, string>
+  age: string
+  rules: any[]
+}
+
+export interface RoleDetail {
+  name: string
+  namespace?: string
+  labels: Record<string, string>
+  age: string
+  rules: any[]
+}
+
+/**
+ * 获取集群角色列表
+ */
+export function getClusterRoles(clusterId: number) {
+  return request<Role[]>({
+    url: '/api/v1/plugins/kubernetes/roles/cluster',
+    method: 'get',
+    params: { clusterId }
+  })
+}
+
+/**
+ * 获取命名空间列表（用于角色管理）
+ */
+export function getNamespacesForRoles(clusterId: number) {
+  return request<{ name: string; podCount?: number }[]>({
+    url: '/api/v1/plugins/kubernetes/roles/namespaces',
+    method: 'get',
+    params: { clusterId }
+  })
+}
+
+/**
+ * 获取命名空间角色列表
+ */
+export function getNamespaceRoles(clusterId: number, namespace: string) {
+  return request<Role[]>({
+    url: '/api/v1/plugins/kubernetes/roles/namespace',
+    method: 'get',
+    params: { clusterId, namespace }
+  })
+}
+
+/**
+ * 获取角色详情
+ */
+export function getRoleDetail(clusterId: number, namespace: string, roleName: string) {
+  return request<RoleDetail>({
+    url: `/api/v1/plugins/kubernetes/roles/${namespace}/${roleName}`,
+    method: 'get',
+    params: { clusterId }
+  })
+}
+
+// ==================== Kubernetes 角色绑定相关 ====================
+
+export interface BindUserToRoleParams {
+  clusterId: number
+  userId: number
+  roleName: string
+  roleNamespace: string
+  roleType: string
+}
+
+export interface UnbindUserFromRoleParams {
+  clusterId: number
+  userId: number
+  roleName: string
+  roleNamespace: string
+}
+
+export interface AvailableUser {
+  id: number
+  username: string
+  realName: string
+  email: string
+}
+
+export interface BoundUser {
+  userId: number
+  username: string
+  realName: string
+  boundAt: string
+}
+
+/**
+ * 绑定用户到K8s角色
+ */
+export function bindUserToRole(data: BindUserToRoleParams) {
+  return request({
+    url: '/api/v1/plugins/kubernetes/role-bindings/bind',
+    method: 'post',
+    data
+  })
+}
+
+/**
+ * 解绑用户K8s角色
+ */
+export function unbindUserFromRole(data: UnbindUserFromRoleParams) {
+  return request({
+    url: '/api/v1/plugins/kubernetes/role-bindings/unbind',
+    method: 'delete',
+    data
+  })
+}
+
+/**
+ * 获取角色已绑定的用户列表
+ */
+export function getRoleBoundUsers(clusterId: number, roleName: string, roleNamespace: string) {
+  return request<BoundUser[]>({
+    url: '/api/v1/plugins/kubernetes/role-bindings/users',
+    method: 'get',
+    params: { clusterId, roleName, roleNamespace }
+  })
+}
+
+/**
+ * 获取可绑定的用户列表
+ */
+export function getAvailableUsers(keyword: string, page: number, pageSize: number) {
+  return request<{
+    list: AvailableUser[]
+    total: number
+    page: number
+    pageSize: number
+  }>({
+    url: '/api/v1/plugins/kubernetes/role-bindings/available-users',
+    method: 'get',
+    params: { keyword, page, pageSize }
+  })
+}
+
+/**
+ * 删除角色
+ */
+export function deleteRole(clusterId: number, namespace: string, roleName: string) {
+  return request({
+    url: `/api/v1/plugins/kubernetes/roles/${namespace}/${roleName}`,
+    method: 'delete',
+    params: { clusterId }
+  })
+}
+
+/**
+ * 凭据用户接口
+ */
+export interface CredentialUser {
+  username: string       // 平台用户名
+  serviceAccount: string // K8s ServiceAccount 完整名称
+  namespace: string      // 命名空间
+  userId: number         // 平台用户ID
+  createdAt: string      // 创建时间
+}
+
+/**
+ * 获取集群的凭据用户列表
+ */
+export function getClusterCredentialUsers(clusterId: number) {
+  return request<CredentialUser[]>({
+    url: '/api/v1/plugins/kubernetes/role-bindings/credential-users',
+    method: 'get',
+    params: { clusterId }
+  })
+}
+
+/**
+ * 获取用户现有的KubeConfig
+ */
+export function getExistingKubeConfig(clusterId: number) {
+  return request<{
+    kubeconfig: string
+    username: string
+  }>({
+    url: '/api/v1/plugins/kubernetes/clusters/kubeconfig/existing',
+    method: 'get',
+    params: { clusterId }
+  })
+}
+
+/**
+ * 根据ServiceAccount获取KubeConfig
+ */
+export function getServiceAccountKubeConfig(clusterId: number, serviceAccount: string) {
+  return request<{
+    kubeconfig: string
+  }>({
+    url: '/api/v1/plugins/kubernetes/clusters/kubeconfig/sa',
+    method: 'post',
+    data: { clusterId, serviceAccount }
+  })
+}
