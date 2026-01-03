@@ -47,21 +47,30 @@ func NewAuthMiddleware(authService *AuthService) *AuthMiddleware {
 // AuthRequired JWT认证
 func (m *AuthMiddleware) AuthRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		var token string
+
+		// 优先从 Authorization header 获取 token
 		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
+		if authHeader != "" {
+			parts := strings.SplitN(authHeader, " ", 2)
+			if len(parts) == 2 && parts[0] == "Bearer" {
+				token = parts[1]
+			}
+		}
+
+		// 如果 header 中没有，尝试从 query 参数获取（用于 WebSocket 连接）
+		if token == "" {
+			token = c.Query("token")
+		}
+
+		// 如果都没有，返回未授权
+		if token == "" {
 			response.ErrorCode(c, http.StatusUnauthorized, "未登录")
 			c.Abort()
 			return
 		}
 
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			response.ErrorCode(c, http.StatusUnauthorized, "token格式错误")
-			c.Abort()
-			return
-		}
-
-		claims, err := m.authService.ParseToken(parts[1])
+		claims, err := m.authService.ParseToken(token)
 		if err != nil {
 			response.ErrorCode(c, http.StatusUnauthorized, "token无效或已过期")
 			c.Abort()

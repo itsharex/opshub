@@ -10,6 +10,7 @@ import (
 
 	"gorm.io/gorm"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/ydcloud-dy/opshub/plugins/kubernetes/data/models"
@@ -308,4 +309,28 @@ func CreateClientsetFromKubeConfig(kubeConfigContent string) (*kubernetes.Client
 	}
 
 	return clientset, nil
+}
+
+// GetClusterRESTConfig 获取集群的 REST Config
+func (b *ClusterBiz) GetClusterRESTConfig(ctx context.Context, id uint) (*rest.Config, error) {
+	cluster, err := b.repo.GetByID(id)
+	if err != nil {
+		return nil, errors.New("集群不存在")
+	}
+
+	_, restConfig, err := b.repo.GetClientset(cluster)
+	if err != nil {
+		return nil, fmt.Errorf("获取集群 REST Config 失败: %w", err)
+	}
+
+	return restConfig, nil
+}
+
+// CreateRESTConfigFromKubeConfig 从 kubeconfig 字符串创建 REST Config
+func CreateRESTConfigFromKubeConfig(kubeConfigContent string) (*rest.Config, error) {
+	config, err := clientcmd.RESTConfigFromKubeConfig([]byte(kubeConfigContent))
+	if err != nil {
+		return nil, fmt.Errorf("从 kubeconfig 创建 REST config 失败: %w", err)
+	}
+	return config, nil
 }

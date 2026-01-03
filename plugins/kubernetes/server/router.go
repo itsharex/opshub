@@ -39,7 +39,23 @@ func RegisterRoutes(router *gin.RouterGroup, db *gorm.DB) {
 
 		// 资源查询
 		clusters.GET("/resources/nodes", resourceHandler.ListNodes)
+		clusters.GET("/resources/nodes/:nodeName/yaml", resourceHandler.GetNodeYAML)
+		clusters.PUT("/resources/nodes/:nodeName/yaml", resourceHandler.UpdateNodeYAML)
+		clusters.POST("/resources/nodes/:nodeName/drain", resourceHandler.DrainNode)
+		clusters.POST("/resources/nodes/:nodeName/cordon", resourceHandler.CordonNode)
+		clusters.POST("/resources/nodes/:nodeName/uncordon", resourceHandler.UncordonNode)
+		clusters.DELETE("/resources/nodes/:nodeName", resourceHandler.DeleteNode)
 		clusters.GET("/resources/nodes/:nodeName/metrics", resourceHandler.GetNodeMetrics)
+
+		// Shell WebSocket
+		clusters.GET("/shell/nodes/:nodeName", resourceHandler.NodeShellWebSocket)
+
+		// CloudTTY 管理
+		clusters.GET("/cloudtty/status", resourceHandler.GetCloudTTYStatus)
+		clusters.POST("/cloudtty/deploy", resourceHandler.DeployCloudTTY)
+		clusters.GET("/cloudtty/service", resourceHandler.GetCloudTTYService)
+		clusters.POST("/cloudtty/service", resourceHandler.CreateCloudTTYService)
+
 		clusters.GET("/resources/namespaces", resourceHandler.ListNamespaces)
 		clusters.GET("/resources/pods", resourceHandler.ListPods)
 		clusters.GET("/resources/deployments", resourceHandler.ListDeployments)

@@ -14,6 +14,16 @@
           <el-tag :type="getStatusType(clusterInfo?.status || 1)" size="large" class="status-tag">
             {{ getStatusText(clusterInfo?.status || 1) }}
           </el-tag>
+          <el-button
+            type="warning"
+            :icon="cloudttyInstalled ? Monitor : Download"
+            :loading="cloudttyLoading"
+            @click="handleCloudTTY"
+            size="large"
+            class="cloudtty-btn"
+          >
+            {{ cloudttyInstalled ? 'CloudTTY' : '部署 CloudTTY' }}
+          </el-button>
         </div>
         <div class="cluster-meta">
           <span class="meta-item">
@@ -357,12 +367,14 @@
 import { ref, onMounted, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import axios from 'axios'
 import {
   ArrowLeft,
   Platform,
   Connection,
   InfoFilled,
   Monitor,
+  Download,
   Files,
   Box,
   Cpu,
@@ -428,6 +440,10 @@ const componentInfo = ref<ClusterComponentInfo>({
   },
   storage: []
 })
+
+// CloudTTY 相关状态
+const cloudttyInstalled = ref(false)
+const cloudttyLoading = ref(false)
 
 const nodeList = ref<NodeInfo[]>([])
 const eventList = ref<EventInfo[]>([])
@@ -598,6 +614,74 @@ const handleBack = () => {
   router.push('/kubernetes/clusters')
 }
 
+// 检查 CloudTTY 是否已安装
+const checkCloudTTY = async () => {
+  try {
+    const token = localStorage.getItem('token')
+    const response = await axios.get(
+      `/api/v1/plugins/kubernetes/cloudtty/status`,
+      {
+        params: { clusterId: clusterId.value },
+        headers: { Authorization: `Bearer ${token}` }
+      }
+    )
+    cloudttyInstalled.value = response.data.data?.installed || false
+  } catch (error) {
+    // 忽略检查错误
+    console.log('CloudTTY check failed:', error)
+  }
+}
+
+// 处理 CloudTTY 按钮
+const handleCloudTTY = async () => {
+  if (cloudttyInstalled.value) {
+    // 打开 CloudTTY
+    openCloudTTY()
+  } else {
+    // 部署 CloudTTY
+    await deployCloudTTY()
+  }
+}
+
+// 部署 CloudTTY
+const deployCloudTTY = async () => {
+  cloudttyLoading.value = true
+  try {
+    const token = localStorage.getItem('token')
+    const response = await axios.post(
+      `/api/v1/plugins/kubernetes/cloudtty/deploy`,
+      { clusterId: clusterId.value },
+      {
+        headers: { Authorization: `Bearer ${token}` }
+      }
+    )
+
+    if (response.data.code === 0) {
+      ElMessage.success('CloudTTY 部署成功！')
+      cloudttyInstalled.value = true
+      // 3秒后自动打开
+      setTimeout(() => {
+        openCloudTTY()
+      }, 3000)
+    } else {
+      ElMessage.error('部署失败: ' + (response.data.message || '未知错误'))
+    }
+  } catch (error: any) {
+    ElMessage.error('部署失败: ' + (error.response?.data?.message || error.message))
+  } finally {
+    cloudttyLoading.value = false
+  }
+}
+
+// 打开 CloudTTY
+const openCloudTTY = () => {
+  const token = localStorage.getItem('token')
+  // 构造 CloudTTY URL，替换为实际的 CloudTTY 服务地址
+  const cloudttyUrl = `http://localhost:7681?clusterId=${clusterId.value}&token=${token}`
+  window.open(cloudttyUrl, '_blank')
+  ElMessage.info('正在打开 CloudTTY...')
+}
+
 // 获取状态类型
 const getStatusType = (status: number) => {
   const statusMap: Record<number, string> = {
@@ -640,6 +724,7 @@ const getNodeRoleType = (roles: string) => {
 
 onMounted(() => {
   loadClusterDetail()
+  checkCloudTTY()
 })
 </script>
 
@@ -726,6 +811,37 @@ onMounted(() => {
       font-size: 14px;
       padding: 8px 16px;
       border-radius: 20px;
+    }
+
+    .cloudtty-btn {
+      background: linear-gradient(135deg, #D4AF37 0%, #B8860B 100%);
+      color: #000000;
+      border: none;
+      font-weight: 600;
+      padding: 12px 28px;
+      border-radius: 8px;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      letter-spacing: 0.5px;
+      box-shadow: 0 4px 12px rgba(212, 175, 55, 0.3);
+      margin-left: 16px;
+
+      &:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(212, 175, 55, 0.5);
+        background: linear-gradient(135deg, #E5C158 0%, #C9961C 100%);
+      }
+
+      &:active {
+        transform: translateY(0);
+        box-shadow: 0 2px 8px rgba(212, 175, 55, 0.3);
+      }
+
+      :deep(.el-icon) {
+        font-size: 18px;
+      }
     }
   }
 

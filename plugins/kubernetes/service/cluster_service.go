@@ -10,6 +10,7 @@ import (
 
 	"gorm.io/gorm"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	metricsv "k8s.io/metrics/pkg/client/clientset/versioned"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -1227,5 +1228,62 @@ func (s *ClusterService) SyncAllClustersStatus(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// GetRESTConfig 获取用户的 REST Config（用于 WebSocket shell 等）
+func (s *ClusterService) GetRESTConfig(clusterID uint, userID uint) (*rest.Config, error) {
+	ctx := context.Background()
+
+	// 检查用户是否是平台管理员
+	isPlatformAdmin, err := s.isPlatformAdmin(ctx, userID)
+	if err != nil {
+		fmt.Printf("⚠️ [GetRESTConfig] 检查用户角色失败: %v\n", err)
+		// 如果检查角色失败，继续使用普通用户逻辑
+	} else if isPlatformAdmin {
+		fmt.Printf("👑 [GetRESTConfig] 用户 %d 是平台管理员，使用集群的 REST config\n", userID)
+		return s.clusterBiz.GetClusterRESTConfig(ctx, clusterID)
+	}
+
+	// 非平台管理员，使用用户个人的 ServiceAccount 凭据
+	fmt.Printf("🔐 [GetRESTConfig] 用户 %d 不是平台管理员，使用个人凭据\n", userID)
+
+	// 查询用户的 ServiceAccount 凭据
+	var config model.UserKubeConfig
+	err = s.db.Where("cluster_id = ? AND user_id = ? AND is_active = 1", clusterID, userID).
+		Order("created_at DESC").
+		First(&config).Error
+
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("用户尚未申请该集群的访问凭据")
+		}
+		return nil, fmt.Errorf("查询用户凭据失败: %w", err)
+	}
+
+	// 获取集群信息
+	cluster, err := s.clusterBiz.GetCluster(ctx, clusterID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 获取管理员 clientset 用于生成用户的 kubeconfig
+	adminClientset, err := s.clusterBiz.GetClusterClientset(ctx, clusterID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 为用户的 ServiceAccount 生成 kubeconfig
+	kubeConfigContent, err := s.generateKubeConfigForServiceAccount(adminClientset, cluster, config.ServiceAccount)
+	if err != nil {
+		return nil, fmt.Errorf("生成用户 kubeconfig 失败: %w", err)
+	}
+
+	// 从 kubeconfig 创建 REST config
+	restConfig, err := biz.CreateRESTConfigFromKubeConfig(kubeConfigContent)
+	if err != nil {
+		return nil, fmt.Errorf("创建 REST config 失败: %w", err)
+	}
+
+	return restConfig, nil
 }
 

@@ -120,8 +120,109 @@
           <el-option label="Control Plane" value="control-plane" />
           <el-option label="Worker" value="worker" />
         </el-select>
+
+        <el-button
+          type="warning"
+          :icon="cloudttyInstalled ? Monitor : Download"
+          :loading="cloudttyLoading"
+          @click="handleCloudTTY"
+          class="cloudtty-action-btn"
+        >
+          {{ cloudttyInstalled ? '打开 CloudTTY' : '部署 CloudTTY' }}
+        </el-button>
       </div>
     </div>
+
+    <!-- CloudTTY 部署对话框 -->
+    <el-dialog
+      v-model="cloudttyDialogVisible"
+      title="部署 CloudTTY"
+      width="600px"
+      :close-on-click-modal="false"
+    >
+      <div class="cloudtty-dialog-content">
+        <el-alert
+          title="CloudTTY 是一个 Kubernetes Web Terminal 解决方案"
+          type="info"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 20px"
+        >
+          <template #default>
+            <p>CloudTTY 可以提供更强大的节点 Shell 功能，支持：</p>
+            <ul style="margin: 10px 0; padding-left: 20px">
+              <li>完整的终端模拟</li>
+              <li>文件上传/下载</li>
+              <li>多标签页支持</li>
+              <li>会话审计和录制</li>
+            </ul>
+          </template>
+        </el-alert>
+
+        <div v-if="cloudttyDeploying" class="deploy-status">
+          <el-progress :percentage="deployProgress" :status="deployStatus" />
+          <p style="margin-top: 10px; text-align: center">{{ deployMessage }}</p>
+        </div>
+
+        <div v-else class="deploy-methods">
+          <h4>部署步骤：</h4>
+          <el-steps direction="vertical" :active="1" class="deploy-steps">
+            <el-step title="复制下方命令" />
+            <el-step title="在控制台执行命令" />
+            <el-step title="等待部署完成（约2-3分钟）" />
+            <el-step title="点击已完成部署按钮刷新状态" />
+          </el-steps>
+
+          <h4 style="margin-top: 20px">部署命令：</h4>
+          <el-input
+            type="textarea"
+            :rows="14"
+            readonly
+            :model-value="cloudttyCommands"
+            class="command-textarea"
+          />
+          <el-button
+            type="primary"
+            @click="copyCommands"
+            style="margin-top: 10px"
+          >
+            复制命令
+          </el-button>
+        </div>
+      </div>
+
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="cloudttyDialogVisible = false">关闭</el-button>
+          <el-button
+            type="success"
+            @click="handleDeployComplete"
+          >
+            我已完成部署
+          </el-button>
+        </span>
+      </template>
+    </el-dialog>
+
+    <!-- CloudTTY 终端对话框 -->
+    <el-dialog
+      v-model="cloudttyTerminalVisible"
+      :title="`Shell - ${selectedNode?.name || ''}`"
+      width="900px"
+      :close-on-click-modal="false"
+      @close="handleCloseCloudTTY"
+      class="cloudtty-terminal-dialog"
+    >
+      <div class="cloudtty-terminal-wrapper">
+        <iframe
+          v-if="cloudttyTerminalVisible"
+          id="cloudtty-iframe"
+          class="cloudtty-iframe"
+          frameborder="0"
+          allow="clipboard-read; clipboard-write"
+        ></iframe>
+      </div>
+    </el-dialog>
 
     <!-- 节点列表 -->
     <div class="table-wrapper">
@@ -259,17 +360,45 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" width="100" fixed="right" align="center">
+      <el-table-column label="操作" width="80" fixed="right" align="center">
         <template #default="{ row }">
-          <el-button
-            type="primary"
-            link
-            @click="handleViewDetails(row)"
-            class="action-btn"
-          >
-            <el-icon><View /></el-icon>
-            详情
-          </el-button>
+          <el-dropdown trigger="click" @command="(command: string) => handleActionCommand(command, row)">
+            <el-button link class="action-btn">
+              <el-icon :size="18"><Edit /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu class="action-dropdown-menu">
+                <el-dropdown-item command="shell">
+                  <el-icon><Monitor /></el-icon>
+                  <span>Shell</span>
+                </el-dropdown-item>
+                <el-dropdown-item command="monitor">
+                  <el-icon><DataAnalysis /></el-icon>
+                  <span>监控</span>
+                </el-dropdown-item>
+                <el-dropdown-item command="yaml">
+                  <el-icon><Document /></el-icon>
+                  <span>YAML</span>
+                </el-dropdown-item>
+                <el-dropdown-item command="drain" divided>
+                  <el-icon><CircleClose /></el-icon>
+                  <span>节点排空</span>
+                </el-dropdown-item>
+                <el-dropdown-item command="cordon">
+                  <el-icon><Warning /></el-icon>
+                  <span>设为不可调度</span>
+                </el-dropdown-item>
+                <el-dropdown-item command="uncordon">
+                  <el-icon><CircleCheck /></el-icon>
+                  <span>设为可调度</span>
+                </el-dropdown-item>
+                <el-dropdown-item command="delete" divided class="danger-item">
+                  <el-icon><Delete /></el-icon>
+                  <span>删除</span>
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </template>
       </el-table-column>
     </el-table>
@@ -356,13 +485,68 @@
         </div>
       </template>
     </el-dialog>
+
+    <!-- YAML 编辑弹窗 -->
+    <el-dialog
+      v-model="yamlDialogVisible"
+      :title="`节点 YAML - ${selectedNode?.name || ''}`"
+      width="900px"
+      class="yaml-dialog"
+    >
+      <div class="yaml-dialog-content">
+        <div class="yaml-editor-wrapper">
+          <div class="yaml-line-numbers">
+            <div v-for="line in yamlLineCount" :key="line" class="line-number">{{ line }}</div>
+          </div>
+          <textarea
+            v-model="yamlContent"
+            class="yaml-textarea"
+            placeholder="YAML 内容"
+            spellcheck="false"
+            @input="handleYamlInput"
+            @scroll="handleYamlScroll"
+            ref="yamlTextarea"
+          ></textarea>
+        </div>
+      </div>
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="yamlDialogVisible = false">取消</el-button>
+          <el-button type="primary" class="black-button" @click="handleSaveYAML" :loading="yamlSaving">
+            保存
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- Shell 终端弹窗 -->
+    <el-dialog
+      v-model="shellDialogVisible"
+      :title="`Shell - ${selectedNode?.name || ''}`"
+      width="900px"
+      class="shell-dialog"
+      @close="handleCloseShell"
+      @opened="handleShellOpened"
+    >
+      <div class="shell-dialog-content">
+        <div ref="terminalRef" class="terminal-container"></div>
+      </div>
+      <template #footer>
+        <span></span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import axios from 'axios'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import { WebLinksAddon } from '@xterm/addon-web-links'
+import '@xterm/xterm/css/xterm.css'
 import {
   Search,
   PriceTag,
@@ -378,7 +562,14 @@ import {
   Odometer,
   Refresh,
   CopyDocument,
-  WarnTriangleFilled
+  WarnTriangleFilled,
+  Edit,
+  DataAnalysis,
+  Document,
+  CircleClose,
+  Setting,
+  Delete,
+  Warning
 } from '@element-plus/icons-vue'
 import { getClusterList, type Cluster, getNodes, type NodeInfo } from '@/api/kubernetes'
 
@@ -405,6 +596,60 @@ const labelList = ref<{ key: string; value: string }[]>([])
 // 污点弹窗
 const taintDialogVisible = ref(false)
 const taintList = ref<{ key: string; value: string; effect: string }[]>([])
+
+// YAML 编辑弹窗
+const yamlDialogVisible = ref(false)
+const yamlContent = ref('')
+const yamlSaving = ref(false)
+const selectedNode = ref<NodeInfo | null>(null)
+const yamlTextarea = ref<HTMLTextAreaElement | null>(null)
+
+// Shell 终端弹窗
+const shellDialogVisible = ref(false)
+const terminalRef = ref<HTMLElement | null>(null)
+let terminal: Terminal | null = null
+let fitAddon: FitAddon | null = null
+let ws: WebSocket | null = null
+
+// CloudTTY 相关状态
+const cloudttyInstalled = ref(false)
+const cloudttyLoading = ref(false)
+const cloudttyDialogVisible = ref(false)
+const cloudttyTerminalVisible = ref(false)
+const cloudttyDeploying = ref(false)
+const deployProgress = ref(0)
+const deployStatus = ref<'success' | 'exception' | ''>('')
+const deployMessage = ref('')
+const deployMethod = ref('auto')
+const cloudttyCommands = ref(`# CloudTTY 部署命令
+
+# 方法1: 使用 Helm 部署 (推荐)
+# 1. 添加 CloudTTY Helm 仓库
+helm repo add cloudtty https://cloudtty.github.io/cloudtty
+
+# 2. 更新仓库
+helm repo update
+
+# 3. 安装 CloudTTY
+helm install cloudtty cloudtty/cloudtty -n cloudtty-system --create-namespace
+
+# 方法2: 使用 kubectl 部署
+kubectl apply -f https://raw.githubusercontent.com/cloudtty/cloudtty/main/config/crd/bases/cloudtty.cloudtty.io_cloudshells.yaml
+kubectl apply -f https://raw.githubusercontent.com/cloudtty/cloudtty/main/config/crd/bases/cloudtty.cloudtty.io_clouddesktops.yaml
+kubectl apply -f https://raw.githubusercontent.com/cloudtty/cloudtty/main/config/release/controller/deployment.yaml
+
+# 验证安装
+kubectl get pods -n cloudtty-system
+kubectl get cloudshell -n cloudtty-system
+
+# 访问 CloudTTY
+# 安装完成后，访问: http://<NodeIP>:30000`)
+
+// 计算YAML行数
+const yamlLineCount = computed(() => {
+  if (!yamlContent.value) return 1
+  return yamlContent.value.split('\n').length
+})
 
 // 过滤后的节点列表
 const filteredNodeList = computed(() => {
@@ -767,8 +1012,460 @@ const handleViewDetails = (row: NodeInfo) => {
   ElMessage.info('详情功能开发中...')
 }
 
+// 处理下拉菜单命令
+const handleActionCommand = (command: string, row: NodeInfo) => {
+  selectedNode.value = row
+
+  switch (command) {
+    case 'shell':
+      handleShell()
+      break
+    case 'monitor':
+      ElMessage.info('监控功能开发中...')
+      break
+    case 'yaml':
+      handleShowYAML()
+      break
+    case 'drain':
+      handleDrainNode()
+      break
+    case 'cordon':
+      handleCordonNode()
+      break
+    case 'uncordon':
+      handleUncordonNode()
+      break
+    case 'delete':
+      handleDeleteNode()
+      break
+    case 'schedule':
+      ElMessage.info('调度设置功能开发中...')
+      break
+  }
+}
+
+// 节点排空
+const handleDrainNode = async () => {
+  if (!selectedNode.value) return
+
+  try {
+    await ElMessageBox.confirm(
+      `确定要排空节点 ${selectedNode.value.name} 吗？这将会驱逐该节点上的所有 Pod。`,
+      '节点排空确认',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning',
+        confirmButtonClass: 'black-button'
+      }
+    )
+
+    // 用户确认后执行排空
+    const token = localStorage.getItem('token')
+    await axios.post(
+      `/api/v1/plugins/kubernetes/resources/nodes/${selectedNode.value.name}/drain`,
+      {
+        clusterId: selectedClusterId.value
+      },
+      {
+        headers: { Authorization: `Bearer ${token}` }
+      }
+    )
+
+    ElMessage.success('节点排空成功')
+    await loadNodes()
+  } catch (error: any) {
+    if (error !== 'cancel') {
+      console.error('节点排空失败:', error)
+      ElMessage.error(`节点排空失败: ${error.response?.data?.message || error.message}`)
+    }
+  }
+}
+
+// 设为不可调度
+const handleCordonNode = async () => {
+  if (!selectedNode.value) return
+
+  try {
+    await ElMessageBox.confirm(
+      `确定要将节点 ${selectedNode.value.name} 设为不可调度吗？该节点将不再接受新的Pod调度。`,
+      '设为不可调度确认',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning',
+        confirmButtonClass: 'black-button'
+      }
+    )
+
+    const token = localStorage.getItem('token')
+    await axios.post(
+      `/api/v1/plugins/kubernetes/resources/nodes/${selectedNode.value.name}/cordon`,
+      {
+        clusterId: selectedClusterId.value
+      },
+      {
+        headers: { Authorization: `Bearer ${token}` }
+      }
+    )
+
+    ElMessage.success('节点已设为不可调度')
+    await loadNodes()
+  } catch (error: any) {
+    if (error !== 'cancel') {
+      console.error('设为不可调度失败:', error)
+      ElMessage.error(`设为不可调度失败: ${error.response?.data?.message || error.message}`)
+    }
+  }
+}
+
+// 设为可调度
+const handleUncordonNode = async () => {
+  if (!selectedNode.value) return
+
+  try {
+    await ElMessageBox.confirm(
+      `确定要将节点 ${selectedNode.value.name} 设为可调度吗？该节点将重新接受新的Pod调度。`,
+      '设为可调度确认',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'info',
+        confirmButtonClass: 'black-button'
+      }
+    )
+
+    const token = localStorage.getItem('token')
+    await axios.post(
+      `/api/v1/plugins/kubernetes/resources/nodes/${selectedNode.value.name}/uncordon`,
+      {
+        clusterId: selectedClusterId.value
+      },
+      {
+        headers: { Authorization: `Bearer ${token}` }
+      }
+    )
+
+    ElMessage.success('节点已设为可调度')
+    await loadNodes()
+  } catch (error: any) {
+    if (error !== 'cancel') {
+      console.error('设为可调度失败:', error)
+      ElMessage.error(`设为可调度失败: ${error.response?.data?.message || error.message}`)
+    }
+  }
+}
+
+// 删除节点
+const handleDeleteNode = async () => {
+  if (!selectedNode.value) return
+
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除节点 ${selectedNode.value.name} 吗？此操作不可恢复！`,
+      '删除节点确认',
+      {
+        confirmButtonText: '确定删除',
+        cancelButtonText: '取消',
+        type: 'error',
+        confirmButtonClass: 'black-button'
+      }
+    )
+
+    const token = localStorage.getItem('token')
+    await axios.delete(
+      `/api/v1/plugins/kubernetes/resources/nodes/${selectedNode.value.name}?clusterId=${selectedClusterId.value}`,
+      {
+        headers: { Authorization: `Bearer ${token}` }
+      }
+    )
+
+    ElMessage.success('节点删除成功')
+    await loadNodes()
+  } catch (error: any) {
+    if (error !== 'cancel') {
+      console.error('删除节点失败:', error)
+      ElMessage.error(`删除节点失败: ${error.response?.data?.message || error.message}`)
+    }
+  }
+}
+
+// 显示 YAML 编辑器
+const handleShowYAML = async () => {
+  if (!selectedNode.value) return
+
+  try {
+    const token = localStorage.getItem('token')
+    const clusterId = selectedClusterId.value
+    const nodeName = selectedNode.value.name
+
+    console.log('获取 YAML:', { clusterId, nodeName })
+
+    const response = await axios.get(
+      `/api/v1/plugins/kubernetes/resources/nodes/${nodeName}/yaml?clusterId=${clusterId}`,
+      {
+        headers: { Authorization: `Bearer ${token}` }
+      }
+    )
+
+    console.log('YAML 响应:', response.data)
+
+    yamlContent.value = response.data.data?.yaml || ''
+    yamlDialogVisible.value = true
+  } catch (error: any) {
+    console.error('获取 YAML 失败:', error)
+    console.error('错误响应:', error.response?.data)
+    ElMessage.error(`获取 YAML 失败: ${error.response?.data?.message || error.message}`)
+  }
+}
+
+// 保存 YAML
+const handleSaveYAML = async () => {
+  if (!selectedNode.value) return
+
+  yamlSaving.value = true
+  try {
+    const token = localStorage.getItem('token')
+    await axios.put(
+      `/api/v1/plugins/kubernetes/resources/nodes/${selectedNode.value.name}/yaml`,
+      {
+        clusterId: selectedClusterId.value,
+        yaml: yamlContent.value
+      },
+      {
+        headers: { Authorization: `Bearer ${token}` }
+      }
+    )
+    ElMessage.success('保存成功')
+    yamlDialogVisible.value = false
+    await loadNodes()
+  } catch (error) {
+    console.error('保存 YAML 失败:', error)
+    ElMessage.error('保存 YAML 失败')
+  } finally {
+    yamlSaving.value = false
+  }
+}
+
+// YAML编辑器输入处理
+const handleYamlInput = () => {
+  // 输入时自动调整滚动
+}
+
+// YAML编辑器滚动处理（同步行号滚动）
+const handleYamlScroll = (e: Event) => {
+  const target = e.target as HTMLTextAreaElement
+  const lineNumbers = document.querySelector('.yaml-line-numbers') as HTMLElement
+  if (lineNumbers) {
+    lineNumbers.scrollTop = target.scrollTop
+  }
+}
+
+// 打开 Shell 终端
+const handleShell = async () => {
+  if (!selectedNode.value) return
+
+  try {
+    const token = localStorage.getItem('token')
+
+    // 先获取CloudTTY的Service信息
+    const serviceResponse = await axios.get(
+      `/api/v1/plugins/kubernetes/cloudtty/service`,
+      {
+        params: {
+          clusterId: selectedClusterId.value
+        },
+        headers: { Authorization: `Bearer ${token}` }
+      }
+    )
+
+    if (serviceResponse.data.code !== 0) {
+      ElMessage.error('CloudTTY服务未找到，请先部署CloudTTY')
+      return
+    }
+
+    const service = serviceResponse.data.data
+    const nodeIp = service.nodeIP || selectedNode.value.internalIP
+    const port = service.port || 30000
+    const path = service.path || '/cloudtty'
+
+    // 构建CloudTTY访问地址
+    const cloudttyUrl = `http://${nodeIp}:${port}${path}?clusterId=${selectedClusterId.value}&node=${selectedNode.value.name}&token=${token}`
+
+    console.log('CloudTTY URL:', cloudttyUrl)
+
+    // 打开 CloudTTY 终端对话框
+    cloudttyTerminalVisible.value = true
+
+    nextTick(() => {
+      const iframe = document.getElementById('cloudtty-iframe') as HTMLIFrameElement
+      if (iframe) {
+        iframe.src = cloudttyUrl
+      }
+    })
+  } catch (error: any) {
+    console.error('获取CloudTTY服务失败:', error)
+    ElMessage.error('无法连接到CloudTTY服务: ' + (error.response?.data?.message || error.message))
+  }
+}
+
+// 关闭 CloudTTY 终端
+const handleCloseCloudTTY = () => {
+  const iframe = document.getElementById('cloudtty-iframe') as HTMLIFrameElement
+  if (iframe) {
+    iframe.src = '' // 清空iframe以停止加载
+  }
+  cloudttyTerminalVisible.value = false
+}
+
+// Shell 终端初始化
+const handleShellOpened = async () => {
+  await nextTick()
+  const container = terminalRef.value
+  if (!container || !selectedNode.value) return
+
+  // 清空容器
+  container.innerHTML = ''
+
+  // 创建终端实例
+  terminal = new Terminal({
+    theme: {
+      background: '#000000',
+      foreground: '#d4af37',
+      cursor: '#d4af37',
+      selection: '#ffffff40'
+    },
+    fontFamily: 'Monaco, Menlo, Courier New, monospace',
+    fontSize: 14,
+    lineHeight: 1.2,
+    cursorBlink: true,
+    scrollback: 1000
+  })
+
+  // 加载插件
+  fitAddon = new FitAddon()
+  terminal.loadAddon(fitAddon)
+  terminal.loadAddon(new WebLinksAddon())
+
+  // 打开终端
+  terminal.open(container)
+  fitAddon.fit()
+
+  // 建立WebSocket连接
+  const token = localStorage.getItem('token')
+  const wsUrl = `ws://localhost:9876/api/v1/plugins/kubernetes/shell/nodes/${selectedNode.value.name}?clusterId=${selectedClusterId.value}&token=${token}`
+
+  ws = new WebSocket(wsUrl)
+
+  ws.onopen = () => {
+    terminal.writeln('连接成功...\r\n')
+  }
+
+  ws.onmessage = (event) => {
+    terminal.write(event.data)
+  }
+
+  ws.onerror = (error) => {
+    terminal.writeln('\r\n\x1b[31m连接错误\x1b[0m')
+    console.error('WebSocket error:', error)
+  }
+
+  ws.onclose = () => {
+    terminal.writeln('\r\n\x1b[33m连接已关闭\x1b[0m')
+  }
+
+  // 监听终端输入
+  terminal.onData((data) => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(data)
+    }
+  })
+
+  // 监听窗口大小变化
+  const resizeObserver = new ResizeObserver(() => {
+    if (fitAddon) {
+      fitAddon.fit()
+    }
+  })
+  resizeObserver.observe(container)
+}
+
+// 关闭 Shell 终端
+const handleCloseShell = () => {
+  if (ws) {
+    ws.close()
+    ws = null
+  }
+  if (terminal) {
+    terminal.dispose()
+    terminal = null
+  }
+  if (fitAddon) {
+    fitAddon = null
+  }
+  shellDialogVisible.value = false
+}
+
+// 检查 CloudTTY 是否已安装
+const checkCloudTTY = async () => {
+  try {
+    const token = localStorage.getItem('token')
+    const response = await axios.get(
+      `/api/v1/plugins/kubernetes/cloudtty/status`,
+      {
+        params: { clusterId: selectedClusterId.value },
+        headers: { Authorization: `Bearer ${token}` }
+      }
+    )
+    cloudttyInstalled.value = response.data.data?.installed || false
+  } catch (error) {
+    console.log('CloudTTY check failed:', error)
+  }
+}
+
+// 处理 CloudTTY 按钮
+const handleCloudTTY = () => {
+  console.log('CloudTTY button clicked, installed:', cloudttyInstalled.value)
+  cloudttyDialogVisible.value = true
+  console.log('Dialog visible set to:', cloudttyDialogVisible.value)
+}
+
+// 开始部署
+const startDeploy = async () => {
+  // 自动部署改为提示用户使用手动部署
+  deployMethod.value = 'manual'
+  await copyCommands()
+  ElMessage.success('命令已复制，请在控制台执行')
+}
+
+// 复制命令
+const copyCommands = () => {
+  navigator.clipboard.writeText(cloudttyCommands.value)
+  ElMessage.success('命令已复制到剪贴板')
+}
+
+// 处理部署完成
+const handleDeployComplete = async () => {
+  cloudttyLoading.value = true
+  await checkCloudTTY()
+  cloudttyLoading.value = false
+
+  if (cloudttyInstalled.value) {
+    ElMessage.success('CloudTTY 部署成功！')
+    cloudttyDialogVisible.value = false
+  } else {
+    ElMessage.warning('未检测到 CloudTTY，请确认部署已完成')
+  }
+}
+
+// 打开 CloudTTY (已废弃，使用对话框替代)
+const openCloudTTY = () => {
+  ElMessage.info('请手动部署 CloudTTY 或使用自动部署功能')
+}
+
 onMounted(() => {
   loadClusters()
+  checkCloudTTY()
 })
 </script>
 
@@ -948,6 +1645,93 @@ onMounted(() => {
 
 .filter-select {
   width: 150px;
+}
+
+.cloudtty-action-btn {
+  background: linear-gradient(135deg, #D4AF37 0%, #B8860B 100%);
+  color: #000000;
+  border: none;
+  font-weight: 600;
+  padding: 12px 24px;
+  border-radius: 8px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.5px;
+  box-shadow: 0 4px 12px rgba(212, 175, 55, 0.3);
+  margin-left: 12px;
+
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(212, 175, 55, 0.5);
+    background: linear-gradient(135deg, #E5C158 0%, #C9961C 100%);
+  }
+
+  &:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 8px rgba(212, 175, 55, 0.3);
+  }
+
+  :deep(.el-icon) {
+    font-size: 16px;
+  }
+}
+
+.cloudtty-dialog-content {
+  .deploy-status {
+    padding: 20px 0;
+  }
+
+  .deploy-methods {
+    h4 {
+      margin: 20px 0 10px 0;
+      color: #303133;
+    }
+
+    .el-radio {
+      display: block;
+      margin-bottom: 15px;
+      padding: 15px;
+      border: 1px solid #dcdfe6;
+      border-radius: 8px;
+      transition: all 0.3s;
+
+      &:hover {
+        border-color: #D4AF37;
+        background-color: rgba(212, 175, 55, 0.05);
+      }
+    }
+
+    .manual-deploy-commands {
+      margin-top: 20px;
+
+      .command-textarea {
+        font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+        font-size: 12px;
+      }
+    }
+  }
+}
+
+.cloudtty-terminal-wrapper {
+  width: 100%;
+  height: calc(100vh - 200px);
+  background-color: #000000;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.cloudtty-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.cloudtty-terminal-dialog {
+  .el-dialog__body {
+    padding: 0;
+  }
 }
 
 .search-icon {
@@ -1300,6 +2084,55 @@ onMounted(() => {
   align-items: center;
   gap: 4px;
   font-size: 13px;
+  color: #d4af37;
+}
+
+.action-btn:hover {
+  color: #bfa13f;
+}
+
+/* 下拉菜单样式 */
+.action-dropdown-menu {
+  min-width: 140px;
+}
+
+.action-dropdown-menu :deep(.el-dropdown-menu__item) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+.action-dropdown-menu :deep(.el-dropdown-menu__item .el-icon) {
+  color: #d4af37;
+  font-size: 16px;
+}
+
+.action-dropdown-menu :deep(.el-dropdown-menu__item.danger-item) {
+  color: #f56c6c;
+}
+
+.action-dropdown-menu :deep(.el-dropdown-menu__item.danger-item .el-icon) {
+  color: #f56c6c;
+}
+
+.action-dropdown-menu :deep(.el-dropdown-menu__item:hover) {
+  background-color: #f5f5f5;
+  color: #d4af37;
+}
+
+.action-dropdown-menu :deep(.el-dropdown-menu__item:hover .el-icon) {
+  color: #d4af37;
+}
+
+.action-dropdown-menu :deep(.el-dropdown-menu__item.danger-item:hover) {
+  background-color: #fef0f0;
+  color: #f56c6c;
+}
+
+.action-dropdown-menu :deep(.el-dropdown-menu__item.danger-item:hover .el-icon) {
+  color: #f56c6c;
 }
 
 /* 分页 */
@@ -1515,5 +2348,90 @@ onMounted(() => {
   .cluster-select {
     width: 100%;
   }
+}
+
+/* YAML 编辑弹窗 */
+.yaml-dialog :deep(.el-dialog__header) {
+  background: linear-gradient(135deg, #000000 0%, #1a1a1a 100%);
+  color: #d4af37;
+  border-radius: 8px 8px 0 0;
+  padding: 20px 24px;
+}
+
+.yaml-dialog :deep(.el-dialog__title) {
+  color: #d4af37;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.yaml-dialog :deep(.el-dialog__body) {
+  padding: 24px;
+  background-color: #1a1a1a;
+}
+
+.yaml-dialog-content {
+  padding: 0;
+}
+
+.yaml-editor-wrapper {
+  display: flex;
+  border: 1px solid #d4af37;
+  border-radius: 6px;
+  overflow: hidden;
+  background-color: #000000;
+}
+
+.yaml-line-numbers {
+  background-color: #0d0d0d;
+  color: #666;
+  padding: 16px 8px;
+  text-align: right;
+  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  user-select: none;
+  overflow: hidden;
+  min-width: 40px;
+  border-right: 1px solid #333;
+}
+
+.line-number {
+  height: 20.8px;
+  line-height: 1.6;
+}
+
+.yaml-textarea {
+  flex: 1;
+  background-color: #000000;
+  color: #d4af37;
+  border: none;
+  outline: none;
+  padding: 16px;
+  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+  min-height: 400px;
+}
+
+.yaml-textarea::placeholder {
+  color: #555;
+}
+
+.yaml-textarea:focus {
+  outline: none;
+}
+
+/* Shell 终端对话框 */
+.shell-dialog-content {
+  padding: 0;
+}
+
+.terminal-container {
+  width: 100%;
+  height: 500px;
+  background-color: #000000;
+  border-radius: 4px;
+  overflow: hidden;
 }
 </style>

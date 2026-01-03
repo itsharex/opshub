@@ -1,16 +1,28 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/metrics/pkg/apis/metrics/v1beta1"
+	"sigs.k8s.io/yaml"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/ydcloud-dy/opshub/plugins/kubernetes/service"
 )
@@ -65,18 +77,18 @@ type NodeInfo struct {
 	Labels           map[string]string `json:"labels"`
 	Annotations      map[string]string `json:"annotations"`
 	// 新增字段
-	CPUCapacity    string `json:"cpuCapacity"`    // CPU容量
-	MemoryCapacity string `json:"memoryCapacity"` // 内存容量
-	CPUUsed        int64  `json:"cpuUsed"`        // CPU使用量（毫核）
-	MemoryUsed     int64  `json:"memoryUsed"`     // 内存使用量（字节）
-	PodCount       int    `json:"podCount"`       // Pod数量
-	PodCapacity    int           `json:"podCapacity"`    // Pod容量
-	Schedulable    bool          `json:"schedulable"`    // 是否可调度
-	TaintCount     int           `json:"taintCount"`     // 污点数量
-	Taints         []TaintInfo   `json:"taints"`         // 污点详情
-	PodCIDR        string        `json:"podCIDR"`        // Pod CIDR
-	ProviderID     string        `json:"providerID"`     // Provider ID
-	Conditions     []NodeCondition `json:"conditions"`   // 节点条件
+	CPUCapacity    string          `json:"cpuCapacity"`    // CPU容量
+	MemoryCapacity string          `json:"memoryCapacity"` // 内存容量
+	CPUUsed        int64           `json:"cpuUsed"`        // CPU使用量（毫核）
+	MemoryUsed     int64           `json:"memoryUsed"`     // 内存使用量（字节）
+	PodCount       int             `json:"podCount"`       // Pod数量
+	PodCapacity    int             `json:"podCapacity"`    // Pod容量
+	Schedulable    bool            `json:"schedulable"`    // 是否可调度
+	TaintCount     int             `json:"taintCount"`     // 污点数量
+	Taints         []TaintInfo     `json:"taints"`         // 污点详情
+	PodCIDR        string          `json:"podCIDR"`        // Pod CIDR
+	ProviderID     string          `json:"providerID"`     // Provider ID
+	Conditions     []NodeCondition `json:"conditions"`     // 节点条件
 }
 
 // TaintInfo 污点信息
@@ -1708,5 +1720,1209 @@ func (h *ResourceHandler) GetResourcesByAPIGroup(c *gin.Context) {
 		"code":    0,
 		"message": "success",
 		"data":    resources,
+	})
+}
+
+// GetNodeYAML 获取节点YAML
+func (h *ResourceHandler) GetNodeYAML(c *gin.Context) {
+	clusterIDStr := c.Query("clusterId")
+	fmt.Printf("🔍 DEBUG [GetNodeYAML]: clusterIDStr=%s\n", clusterIDStr)
+
+	clusterID, err := strconv.Atoi(clusterIDStr)
+	if err != nil {
+		fmt.Printf("❌ DEBUG [GetNodeYAML]: Invalid clusterID: %v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的集群ID",
+		})
+		return
+	}
+
+	nodeName := c.Param("nodeName")
+	if nodeName == "" {
+		fmt.Printf("❌ DEBUG [GetNodeYAML]: Empty nodeName\n")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "节点名称不能为空",
+		})
+		return
+	}
+
+	fmt.Printf("🔍 DEBUG [GetNodeYAML]: nodeName=%s, clusterID=%d\n", nodeName, clusterID)
+
+	// 获取当前用户ID
+	currentUserID, exists := c.Get("user_id")
+	if !exists {
+		fmt.Printf("❌ DEBUG [GetNodeYAML]: No user_id in context\n")
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    401,
+			"message": "未授权",
+		})
+		return
+	}
+
+	fmt.Printf("✅ DEBUG [GetNodeYAML]: userID=%v\n", currentUserID)
+
+	// 获取clientset
+	clientset, err := h.clusterService.GetClientsetForUser(c.Request.Context(), uint(clusterID), currentUserID.(uint))
+	if err != nil {
+		fmt.Printf("❌ DEBUG [GetNodeYAML]: GetClientsetForUser failed: %v\n", err)
+		if h.handleGetClientsetError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取集群客户端失败: " + err.Error(),
+		})
+		return
+	}
+
+	fmt.Printf("✅ DEBUG [GetNodeYAML]: Got clientset\n")
+
+	// 获取节点
+	node, err := clientset.CoreV1().Nodes().Get(c.Request.Context(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		fmt.Printf("❌ DEBUG [GetNodeYAML]: Get node failed: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取节点失败: " + err.Error(),
+		})
+		return
+	}
+
+	fmt.Printf("✅ DEBUG [GetNodeYAML]: Got node %s\n", node.Name)
+
+	// 清理不需要的字段
+	cleanedNode := cleanNodeForYAML(node)
+
+	// 转换为YAML
+	yamlBytes, err := yamlMarshal(cleanedNode)
+	if err != nil {
+		fmt.Printf("❌ DEBUG [GetNodeYAML]: Marshal YAML failed: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "转换YAML失败: " + err.Error(),
+		})
+		return
+	}
+
+	fmt.Printf("✅ DEBUG [GetNodeYAML]: YAML marshaled successfully, length=%d\n", len(yamlBytes))
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data": gin.H{
+			"yaml": string(yamlBytes),
+		},
+	})
+}
+
+// UpdateNodeYAMLRequest 更新节点YAML请求
+type UpdateNodeYAMLRequest struct {
+	ClusterID int    `json:"clusterId" binding:"required"`
+	YAML      string `json:"yaml" binding:"required"`
+}
+
+// UpdateNodeYAML 更新节点YAML
+func (h *ResourceHandler) UpdateNodeYAML(c *gin.Context) {
+	nodeName := c.Param("nodeName")
+	if nodeName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "节点名称不能为空",
+		})
+		return
+	}
+
+	var req UpdateNodeYAMLRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "请求参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	// 获取当前用户ID
+	currentUserID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    401,
+			"message": "未授权",
+		})
+		return
+	}
+
+	// 获取clientset
+	clientset, err := h.clusterService.GetClientsetForUser(c.Request.Context(), uint(req.ClusterID), currentUserID.(uint))
+	if err != nil {
+		if h.handleGetClientsetError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取集群客户端失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 解析YAML为map
+	var yamlData map[string]interface{}
+	if err := yamlUnmarshal([]byte(req.YAML), &yamlData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "解析YAML失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 验证节点名称
+	if metadata, ok := yamlData["metadata"].(map[string]interface{}); ok {
+		if name, ok := metadata["name"].(string); ok && name != nodeName {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"code":    400,
+				"message": "YAML中的节点名称与URL中的不一致",
+			})
+			return
+		}
+	}
+
+	// 将YAML数据转换为JSON，因为Kubernetes PATCH需要JSON格式
+	patchData, err := json.Marshal(yamlData)
+	if err != nil {
+		fmt.Printf("❌ DEBUG [UpdateNodeYAML]: JSON marshal failed: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "序列化Patch数据失败: " + err.Error(),
+		})
+		return
+	}
+
+	fmt.Printf("🔍 DEBUG [UpdateNodeYAML]: Patch data (JSON): %s\n", string(patchData))
+
+	// 使用 Strategic Merge Patch 更新节点
+	// 这样可以避免 resourceVersion 冲突
+	_, err = clientset.CoreV1().Nodes().Patch(
+		c.Request.Context(),
+		nodeName,
+		types.StrategicMergePatchType,
+		patchData,
+		metav1.PatchOptions{},
+	)
+	if err != nil {
+		fmt.Printf("❌ DEBUG [UpdateNodeYAML]: Patch failed: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "更新节点失败: " + err.Error(),
+		})
+		return
+	}
+
+	fmt.Printf("✅ DEBUG [UpdateNodeYAML]: Patched node %s successfully\n", nodeName)
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "更新成功",
+	})
+}
+
+// DrainNodeRequest 排空节点请求
+type DrainNodeRequest struct {
+	ClusterID int `json:"clusterId" binding:"required"`
+}
+
+// DrainNode 排空节点
+func (h *ResourceHandler) DrainNode(c *gin.Context) {
+	nodeName := c.Param("nodeName")
+	if nodeName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "节点名称不能为空",
+		})
+		return
+	}
+
+	var req DrainNodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "请求参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	// 获取当前用户ID
+	currentUserID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    401,
+			"message": "未授权",
+		})
+		return
+	}
+
+	// 获取clientset
+	clientset, err := h.clusterService.GetClientsetForUser(c.Request.Context(), uint(req.ClusterID), currentUserID.(uint))
+	if err != nil {
+		if h.handleGetClientsetError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取集群客户端失败: " + err.Error(),
+		})
+		return
+	}
+
+	fmt.Printf("🔍 DEBUG [DrainNode]: Starting drain for node %s\n", nodeName)
+
+	// 获取节点上的所有Pod
+	pods, err := clientset.CoreV1().Pods("").List(c.Request.Context(), metav1.ListOptions{})
+	if err != nil {
+		fmt.Printf("❌ DEBUG [DrainNode]: List pods failed: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取Pod列表失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 驱逐该节点上的所有Pod（除了DaemonSet的Pod）
+	evictedCount := 0
+	for _, pod := range pods.Items {
+		if pod.Spec.NodeName != nodeName {
+			continue
+		}
+
+		// 跳过DaemonSet管理的Pod
+		if pod.OwnerReferences != nil {
+			isDaemonSet := false
+			for _, ownerRef := range pod.OwnerReferences {
+				if ownerRef.Kind == "DaemonSet" {
+					isDaemonSet = true
+					break
+				}
+			}
+			if isDaemonSet {
+				fmt.Printf("⏭️  DEBUG [DrainNode]: Skipping DaemonSet pod %s\n", pod.Name)
+				continue
+			}
+		}
+
+		// 驱逐Pod
+		err = clientset.CoreV1().Pods(pod.Namespace).EvictV1(context.Background(), &policyv1.Eviction{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      pod.Name,
+				Namespace: pod.Namespace,
+			},
+		})
+		if err != nil {
+			fmt.Printf("⚠️  DEBUG [DrainNode]: Failed to evict pod %s/%s: %v\n", pod.Namespace, pod.Name, err)
+			// 继续驱逐其他Pod，不中断
+			continue
+		}
+		evictedCount++
+		fmt.Printf("✅ DEBUG [DrainNode]: Evicted pod %s/%s\n", pod.Namespace, pod.Name)
+	}
+
+	fmt.Printf("✅ DEBUG [DrainNode]: Drain completed for node %s, evicted %d pods\n", nodeName, evictedCount)
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "节点排空成功",
+		"data": gin.H{
+			"evictedPods": evictedCount,
+		},
+	})
+}
+
+// CordonNodeRequest 设为不可调度请求
+type CordonNodeRequest struct {
+	ClusterID int `json:"clusterId" binding:"required"`
+}
+
+// CordonNode 设为不可调度
+func (h *ResourceHandler) CordonNode(c *gin.Context) {
+	nodeName := c.Param("nodeName")
+	if nodeName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "节点名称不能为空",
+		})
+		return
+	}
+
+	var req CordonNodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "请求参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	// 获取当前用户ID
+	currentUserID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    401,
+			"message": "未授权",
+		})
+		return
+	}
+
+	// 获取clientset
+	clientset, err := h.clusterService.GetClientsetForUser(c.Request.Context(), uint(req.ClusterID), currentUserID.(uint))
+	if err != nil {
+		if h.handleGetClientsetError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取集群客户端失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 获取节点
+	node, err := clientset.CoreV1().Nodes().Get(c.Request.Context(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取节点失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 检查是否已经是不可调度状态
+	if node.Spec.Unschedulable {
+		c.JSON(http.StatusOK, gin.H{
+			"code":    0,
+			"message": "节点已经是不可调度状态",
+		})
+		return
+	}
+
+	// 设为不可调度
+	node.Spec.Unschedulable = true
+	_, err = clientset.CoreV1().Nodes().Update(c.Request.Context(), node, metav1.UpdateOptions{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "设为不可调度失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "节点已设为不可调度",
+	})
+}
+
+// UncordonNode 设为可调度
+func (h *ResourceHandler) UncordonNode(c *gin.Context) {
+	nodeName := c.Param("nodeName")
+	if nodeName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "节点名称不能为空",
+		})
+		return
+	}
+
+	var req CordonNodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "请求参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	// 获取当前用户ID
+	currentUserID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    401,
+			"message": "未授权",
+		})
+		return
+	}
+
+	// 获取clientset
+	clientset, err := h.clusterService.GetClientsetForUser(c.Request.Context(), uint(req.ClusterID), currentUserID.(uint))
+	if err != nil {
+		if h.handleGetClientsetError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取集群客户端失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 获取节点
+	node, err := clientset.CoreV1().Nodes().Get(c.Request.Context(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取节点失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 检查是否已经是可调度状态
+	if !node.Spec.Unschedulable {
+		c.JSON(http.StatusOK, gin.H{
+			"code":    0,
+			"message": "节点已经是可调度状态",
+		})
+		return
+	}
+
+	// 设为可调度
+	node.Spec.Unschedulable = false
+	_, err = clientset.CoreV1().Nodes().Update(c.Request.Context(), node, metav1.UpdateOptions{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "设为可调度失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "节点已设为可调度",
+	})
+}
+
+// DeleteNode 删除节点
+func (h *ResourceHandler) DeleteNode(c *gin.Context) {
+	nodeName := c.Param("nodeName")
+	if nodeName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "节点名称不能为空",
+		})
+		return
+	}
+
+	clusterIDStr := c.Query("clusterId")
+	clusterID, err := strconv.Atoi(clusterIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的集群ID",
+		})
+		return
+	}
+
+	// 获取当前用户ID
+	currentUserID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    401,
+			"message": "未授权",
+		})
+		return
+	}
+
+	fmt.Printf("🔍 DEBUG [DeleteNode]: Deleting node %s, clusterID=%d\n", nodeName, clusterID)
+
+	// 获取clientset
+	clientset, err := h.clusterService.GetClientsetForUser(c.Request.Context(), uint(clusterID), currentUserID.(uint))
+	if err != nil {
+		if h.handleGetClientsetError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取集群客户端失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 删除节点
+	err = clientset.CoreV1().Nodes().Delete(c.Request.Context(), nodeName, metav1.DeleteOptions{})
+	if err != nil {
+		fmt.Printf("❌ DEBUG [DeleteNode]: Delete node failed: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "删除节点失败: " + err.Error(),
+		})
+		return
+	}
+
+	fmt.Printf("✅ DEBUG [DeleteNode]: Node %s deleted successfully\n", nodeName)
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "节点删除成功",
+	})
+}
+
+// yamlMarshal 简单的YAML序列化
+func yamlMarshal(obj interface{}) ([]byte, error) {
+	return yaml.Marshal(obj)
+}
+
+// yamlUnmarshal 简单的YAML反序列化
+func yamlUnmarshal(data []byte, obj interface{}) error {
+	return yaml.Unmarshal(data, obj)
+}
+
+// cleanNodeForYAML 清理Node对象用于YAML输出
+func cleanNodeForYAML(node *v1.Node) map[string]interface{} {
+	// 创建一个副本，避免修改原始对象
+	cleaned := node.DeepCopy()
+
+	// 移除 managedFields
+	if cleaned.ObjectMeta.ManagedFields != nil {
+		cleaned.ObjectMeta.ManagedFields = nil
+	}
+
+	// 转换为 map 以便控制 YAML 序列化顺序
+	result := make(map[string]interface{})
+
+	// 确保 apiVersion 和 kind 在最前面
+	result["apiVersion"] = "v1"
+	result["kind"] = "Node"
+
+	// 添加 metadata
+	metadata := make(map[string]interface{})
+	if cleaned.Name != "" {
+		metadata["name"] = cleaned.Name
+	}
+	if len(cleaned.Labels) > 0 {
+		metadata["labels"] = cleaned.Labels
+	}
+	if len(cleaned.Annotations) > 0 {
+		metadata["annotations"] = cleaned.Annotations
+	}
+	// 不包含 resourceVersion，使用 PATCH 更新时不需要
+	if len(cleaned.Finalizers) > 0 {
+		metadata["finalizers"] = cleaned.Finalizers
+	}
+
+	result["metadata"] = metadata
+
+	// 添加 spec
+	spec := make(map[string]interface{})
+	if cleaned.Spec.PodCIDR != "" {
+		spec["podCIDR"] = cleaned.Spec.PodCIDR
+	}
+	if len(cleaned.Spec.PodCIDRs) > 0 {
+		spec["podCIDRs"] = cleaned.Spec.PodCIDRs
+	}
+	if cleaned.Spec.ProviderID != "" {
+		spec["providerID"] = cleaned.Spec.ProviderID
+	}
+	if cleaned.Spec.Unschedulable {
+		spec["unschedulable"] = cleaned.Spec.Unschedulable
+	}
+	if len(cleaned.Spec.Taints) > 0 {
+		spec["taints"] = cleaned.Spec.Taints
+	}
+	if cleaned.Spec.ConfigSource != nil {
+		spec["configSource"] = cleaned.Spec.ConfigSource
+	}
+
+	result["spec"] = spec
+
+	// 不包含 status，因为 status 是由 Kubernetes 自动管理的
+
+	return result
+}
+
+// WebSocket upgrader
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true // 允许所有来源，生产环境应该更严格
+	},
+}
+
+// NodeShell WebSocket 处理器 - 使用 debug pod 方式
+func (h *ResourceHandler) NodeShellWebSocket(c *gin.Context) {
+	nodeName := c.Param("nodeName")
+	if nodeName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "节点名称不能为空",
+		})
+		return
+	}
+
+	clusterIDStr := c.Query("clusterId")
+	clusterID, err := strconv.Atoi(clusterIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的集群ID",
+		})
+		return
+	}
+
+	// 获取当前用户ID
+	currentUserID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    401,
+			"message": "未授权",
+		})
+		return
+	}
+
+	// 升级到 WebSocket 连接
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade failed: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	fmt.Printf("🐚 WebSocket shell connected to node %s, clusterID=%d\n", nodeName, clusterID)
+
+	// 获取 clientset
+	clientset, err := h.clusterService.GetClientsetForUser(c.Request.Context(), uint(clusterID), currentUserID.(uint))
+	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("获取集群客户端失败: "+err.Error()+"\r\n"))
+		return
+	}
+
+	// 获取 REST config
+	restConfig, err := h.clusterService.GetRESTConfig(uint(clusterID), currentUserID.(uint))
+	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("获取集群配置失败: "+err.Error()+"\r\n"))
+		return
+	}
+
+	// 创建临时 debug pod
+	debugPodName := fmt.Sprintf("debug-%s-%d", nodeName, time.Now().Unix())
+	debugNamespace := "default"
+
+	conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("正在创建临时 debug pod: %s...\r\n", debugPodName)))
+
+	// 定义 debug pod（使用 node profile 共享节点命名空间）
+	debugPod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      debugPodName,
+			Namespace: debugNamespace,
+			Labels: map[string]string{
+				"app":     "opshub-debug",
+				"node":    nodeName,
+				"created-by": "opshub",
+			},
+		},
+		Spec: v1.PodSpec{
+			// 使用节点亲和性确保调度到目标节点
+			NodeName: nodeName,
+			// 使用 hostPID 和 hostNetwork 共享节点的进程和网络命名空间
+			HostPID:      true,
+			HostNetwork:  true,
+			RestartPolicy: v1.RestartPolicyNever,
+			// 容器配置
+			Containers: []v1.Container{
+				{
+					Name:    "debug",
+					Image:   "swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/nicolaka/netshoot:latest",
+					Command: []string{"/bin/bash"},
+					Args:    []string{"-c", "sleep 3600"}, // 保持运行
+					Stdin:   true,
+					TTY:     true,
+					// 安全上下文
+					SecurityContext: &v1.SecurityContext{
+						Privileged: func() *bool { b := true; return &b }(),
+					},
+				},
+			},
+			//容忍所有污点，确保可以调度到任何节点
+			Tolerations: []v1.Toleration{
+				{
+					Operator: v1.TolerationOpExists,
+				},
+			},
+		},
+	}
+
+	// 创建 debug pod
+	createdPod, err := clientset.CoreV1().Pods(debugNamespace).Create(c.Request.Context(), debugPod, metav1.CreateOptions{})
+	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("创建 debug pod 失败: "+err.Error()+"\r\n"))
+		return
+	}
+
+	fmt.Printf("🐚 Created debug pod: %s/%s\n", debugNamespace, createdPod.Name)
+	conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Debug pod 创建成功，等待启动...\r\n")))
+
+	// 等待 pod 启动（最多等待30秒）
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	err = h.waitForPodReady(ctx, clientset, debugNamespace, debugPodName, conn)
+	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("等待 debug pod 启动失败: "+err.Error()+"\r\n"))
+		// 清理 pod
+		clientset.CoreV1().Pods(debugNamespace).Delete(ctx, debugPodName, metav1.DeleteOptions{})
+		return
+	}
+
+	conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("已连接到节点 %s\r\n\r\n", nodeName)))
+
+	// 确保在连接关闭时清理 pod
+	defer func() {
+		fmt.Printf("🐚 Cleaning up debug pod: %s/%s\n", debugNamespace, debugPodName)
+		clientset.CoreV1().Pods(debugNamespace).Delete(context.Background(), debugPodName, metav1.DeleteOptions{})
+	}()
+
+	// 构造 exec URL
+	serverURL, err := url.Parse(restConfig.Host)
+	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("解析集群 URL 失败: "+err.Error()+"\r\n"))
+		return
+	}
+
+	// 构造 query 参数
+	query := url.Values{}
+	query.Set("container", "debug")
+	query.Set("stdin", "true")
+	query.Set("stdout", "true")
+	query.Set("stderr", "true")
+	query.Set("tty", "true")
+
+	// 使用 nsenter 进入节点根命名空间
+	query.Add("command", "/bin/bash")
+	query.Add("command", "-c")
+	query.Add("command", "nsenter -t 1 -m -u -i -n -p -- /bin/bash || /bin/bash")
+
+	execURL := &url.URL{
+		Scheme:   serverURL.Scheme,
+		Host:     serverURL.Host,
+		Path:     fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/exec", debugNamespace, debugPodName),
+		RawQuery: query.Encode(),
+	}
+
+	fmt.Printf("🐚 Exec URL: %s\n", execURL.String())
+
+	// 创建 SPDY executor
+	executor, err := remotecommand.NewSPDYExecutor(restConfig, "POST", execURL)
+	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("创建 executor 失败: "+err.Error()+"\r\n"))
+		return
+	}
+
+	// 创建 WebSocket 读写器
+	wsReader := &WebSocketReader{
+		conn: conn,
+		data: make(chan []byte, 256),
+	}
+	wsWriter := &WebSocketWriter{conn: conn}
+
+	// 处理 WebSocket 消息
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				fmt.Printf("🐚 WebSocket read error: %v\n", err)
+				return
+			}
+			wsReader.data <- data
+		}
+	}()
+
+	// 发送初始消息
+	conn.WriteMessage(websocket.TextMessage, []byte("连接成功，正在初始化 shell...\r\n"))
+
+	// 启动 exec 会话，使用 chroot 或 nsenter 进入节点 shell
+	// 注意：这里需要容器有足够权限（特权容器），通常使用 kube-system 的 Pod
+	streamOptions := remotecommand.StreamOptions{
+		Stdin:  wsReader,
+		Stdout: wsWriter,
+		Stderr: wsWriter,
+		Tty:    true,
+	}
+
+	// 执行远程命令（命令已在 URL query 参数中指定）
+	err = executor.Stream(streamOptions)
+	if err != nil {
+		conn.WriteMessage(websocket.TextMessage, []byte("Shell 执行失败: "+err.Error()+"\r\n"))
+		fmt.Printf("🐚 Shell execution error: %v\n", err)
+	}
+
+	<-done
+	fmt.Printf("🐚 WebSocket shell disconnected from node %s\n", nodeName)
+}
+
+// WebSocketReader 实现 io.Reader 接口
+type WebSocketReader struct {
+	conn *websocket.Conn
+	data chan []byte
+}
+
+func (r *WebSocketReader) Read(p []byte) (int, error) {
+	data, ok := <-r.data
+	if !ok {
+		return 0, io.EOF
+	}
+	n := copy(p, data)
+	return n, nil
+}
+
+// WebSocketWriter 实现 io.Writer 接口
+type WebSocketWriter struct {
+	conn *websocket.Conn
+}
+
+func (w *WebSocketWriter) Write(p []byte) (int, error) {
+	err := w.conn.WriteMessage(websocket.TextMessage, p)
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// waitForPodReady 等待 Pod 准备就绪
+func (h *ResourceHandler) waitForPodReady(ctx context.Context, clientset *kubernetes.Clientset, namespace, podName string, conn *websocket.Conn) error {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("获取 pod 状态失败: %w", err)
+			}
+
+			switch pod.Status.Phase {
+			case v1.PodRunning:
+				// 检查容器是否就绪
+				for _, cs := range pod.Status.ContainerStatuses {
+					if !cs.Ready {
+						// 容器还未就绪，继续等待
+						goto continueWait
+					}
+				}
+				fmt.Printf("🐚 Pod %s/%s is ready\n", namespace, podName)
+				return nil
+			case v1.PodFailed, v1.PodSucceeded:
+				return fmt.Errorf("pod %s/%s 处于 %s 状态", namespace, podName, pod.Status.Phase)
+			}
+		}
+	continueWait:
+	}
+}
+
+// GetCloudTTYStatus 检查 CloudTTY 是否已安装
+func (h *ResourceHandler) GetCloudTTYStatus(c *gin.Context) {
+	clusterIDStr := c.Query("clusterId")
+	clusterID, err := strconv.Atoi(clusterIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的集群ID",
+		})
+		return
+	}
+
+	// 获取当前用户ID
+	currentUserID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    401,
+			"message": "未授权",
+		})
+		return
+	}
+
+	// 获取 clientset
+	clientset, err := h.clusterService.GetClientsetForUser(c.Request.Context(), uint(clusterID), currentUserID.(uint))
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"code":     0,
+			"data":     gin.H{"installed": false},
+			"message":  "获取集群客户端失败",
+		})
+		return
+	}
+
+	// 检查 CloudTTY deployment 是否存在
+	_, err = clientset.AppsV1().Deployments("cloudtty-system").Get(c.Request.Context(), "cloudtty-controller-manager", metav1.GetOptions{})
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"code":     0,
+			"data":     gin.H{"installed": false},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":     0,
+		"data":     gin.H{"installed": true},
+	})
+}
+
+// DeployCloudTTY 部署 CloudTTY
+func (h *ResourceHandler) DeployCloudTTY(c *gin.Context) {
+	var req struct {
+		ClusterID int `json:"clusterId" binding:"required"`
+	}
+
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "参数错误",
+		})
+		return
+	}
+
+	// 获取当前用户ID
+	currentUserID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    401,
+			"message": "未授权",
+		})
+		return
+	}
+
+	// 获取 clientset
+	clientset, err := h.clusterService.GetClientsetForUser(c.Request.Context(), uint(req.ClusterID), currentUserID.(uint))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取集群客户端失败",
+		})
+		return
+	}
+
+	// 创建 cloudtty-system 命名空间
+	ns := &v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cloudtty-system",
+			Labels: map[string]string{
+				"name": "cloudtty-system",
+			},
+		},
+	}
+
+	_, err = clientset.CoreV1().Namespaces().Create(c.Request.Context(), ns, metav1.CreateOptions{})
+	if err != nil && !strings.Contains(err.Error(), "already exists") {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "创建命名空间失败: " + err.Error(),
+		})
+		return
+	}
+
+	// CloudTTY CRD 定义（如果需要）
+	// 注意：实际部署 CloudTTY 需要使用 kubectl apply 或者 helm
+	// 这里提供一个简化版本，实际应该使用 CloudTTY 官方安装方式
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "CloudTTY 部署功能需要使用官方 helm chart 或 kubectl manifest",
+		"data": gin.H{
+			"note": "请使用以下命令部署 CloudTTY:",
+			"commands": []string{
+				"helm repo add cloudtty https://cloudtty.github.io/cloudtty",
+				"helm repo update",
+				"helm install cloudtty cloudtty/cloudtty -n cloudtty-system --create-namespace",
+			},
+		},
+	})
+}
+
+// GetCloudTTYService 获取 CloudTTY 服务信息
+func (h *ResourceHandler) GetCloudTTYService(c *gin.Context) {
+	clusterIDStr := c.Query("clusterId")
+	clusterID, err := strconv.Atoi(clusterIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的集群ID",
+		})
+		return
+	}
+
+	// 获取当前用户ID
+	currentUserID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    401,
+			"message": "未授权",
+		})
+		return
+	}
+
+	// 获取 clientset
+	clientset, err := h.clusterService.GetClientsetForUser(c.Request.Context(), uint(clusterID), currentUserID.(uint))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取集群客户端失败",
+		})
+		return
+	}
+
+	// 尝试获取CloudTTY Service
+	svc, err := clientset.CoreV1().Services("cloudtty-system").Get(c.Request.Context(), "cloudtty", metav1.GetOptions{})
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"code":     0,
+			"data":     nil,
+			"message":  "CloudTTY Service未找到",
+		})
+		return
+	}
+
+	// 获取Service的访问信息
+	var nodeIP string
+	var port int32
+
+	if svc.Spec.Type == v1.ServiceTypeNodePort {
+		// NodePort类型，返回节点IP和端口
+		if len(svc.Spec.Ports) > 0 {
+			port = svc.Spec.Ports[0].NodePort
+		}
+		// 获取集群节点列表，选择一个节点IP
+		nodes, err := clientset.CoreV1().Nodes().List(c.Request.Context(), metav1.ListOptions{})
+		if err == nil && len(nodes.Items) > 0 {
+			nodeIP = nodes.Items[0].Status.Addresses[0].Address
+		}
+	} else if svc.Spec.Type == v1.ServiceTypeLoadBalancer {
+		// LoadBalancer类型
+		if len(svc.Status.LoadBalancer.Ingress) > 0 {
+			nodeIP = svc.Status.LoadBalancer.Ingress[0].IP
+		}
+	} else {
+		// ClusterIP类型，无法从外部访问
+		c.JSON(http.StatusOK, gin.H{
+			"code":     0,
+			"data":     nil,
+			"message":  "CloudTTY Service类型不支持直接访问，请使用 NodePort 或 LoadBalancer",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":     0,
+		"data": gin.H{
+			"nodeIP":   nodeIP,
+			"port":     port,
+			"type":     string(svc.Spec.Type),
+			"path":     "/cloudtty",
+		},
+	})
+}
+
+// CreateCloudTTYService 创建 CloudTTY Service
+func (h *ResourceHandler) CreateCloudTTYService(c *gin.Context) {
+	var req struct {
+		ClusterID int `json:"clusterId" binding:"required"`
+	}
+
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "参数错误",
+		})
+		return
+	}
+
+	// 获取当前用户ID
+	currentUserID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    401,
+			"message": "未授权",
+		})
+		return
+	}
+
+	// 获取 clientset
+	clientset, err := h.clusterService.GetClientsetForUser(c.Request.Context(), uint(req.ClusterID), currentUserID.(uint))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取集群客户端失败",
+		})
+		return
+	}
+
+	// 获取一个节点IP
+	nodes, err := clientset.CoreV1().Nodes().List(c.Request.Context(), metav1.ListOptions{})
+	if err != nil || len(nodes.Items) == 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取节点列表失败",
+		})
+		return
+	}
+	nodeIP := nodes.Items[0].Status.Addresses[0].Address
+
+	// 创建CloudTTY Service
+	svc := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cloudtty",
+			Namespace: "cloudtty-system",
+			Labels: map[string]string{
+				"app": "cloudtty",
+			},
+		},
+		Spec: v1.ServiceSpec{
+			Type: v1.ServiceTypeNodePort,
+			Ports: []v1.ServicePort{
+				{
+					Port:     80,
+					TargetPort: intstr.IntOrString{IntVal: 30000},
+					NodePort:  30000,
+				},
+			},
+			Selector: map[string]string{
+				"app": "cloudtty",
+			},
+		},
+	}
+
+	_, err = clientset.CoreV1().Services("cloudtty-system").Create(c.Request.Context(), svc, metav1.CreateOptions{})
+	if err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			c.JSON(http.StatusOK, gin.H{
+				"code":    0,
+				"message": "CloudTTY Service已存在",
+				"data": gin.H{
+					"nodeIP":   nodeIP,
+					"port":     30000,
+					"path":     "/cloudtty",
+				},
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "创建Service失败: " + err.Error(),
+		})
+		return
+	}
+
+	fmt.Printf("✅ Created CloudTTY Service: %s:%d\n", nodeIP, 30000)
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "CloudTTY Service创建成功",
+		"data": gin.H{
+			"nodeIP":   nodeIP,
+			"port":     30000,
+			"path":     "/cloudtty",
+		},
 	})
 }
