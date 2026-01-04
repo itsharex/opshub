@@ -59,6 +59,7 @@ func RegisterRoutes(router *gin.RouterGroup, db *gorm.DB) {
 		clusters.GET("/resources/namespaces", resourceHandler.ListNamespaces)
 		clusters.GET("/resources/pods", resourceHandler.ListPods)
 		clusters.GET("/resources/deployments", resourceHandler.ListDeployments)
+		clusters.GET("/resources/workloads", resourceHandler.GetWorkloads)
 		clusters.GET("/resources/api-groups", resourceHandler.GetAPIGroups)
 		clusters.GET("/resources/api-resources", resourceHandler.GetResourcesByAPIGroup)
 

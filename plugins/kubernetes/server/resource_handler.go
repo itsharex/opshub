@@ -8,21 +8,25 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	"k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	"sigs.k8s.io/yaml"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/ydcloud-dy/opshub/plugins/kubernetes/service"
 )
@@ -2413,8 +2417,8 @@ func (h *ResourceHandler) NodeShellWebSocket(c *gin.Context) {
 			Name:      debugPodName,
 			Namespace: debugNamespace,
 			Labels: map[string]string{
-				"app":     "opshub-debug",
-				"node":    nodeName,
+				"app":        "opshub-debug",
+				"node":       nodeName,
 				"created-by": "opshub",
 			},
 		},
@@ -2422,8 +2426,8 @@ func (h *ResourceHandler) NodeShellWebSocket(c *gin.Context) {
 			// 使用节点亲和性确保调度到目标节点
 			NodeName: nodeName,
 			// 使用 hostPID 和 hostNetwork 共享节点的进程和网络命名空间
-			HostPID:      true,
-			HostNetwork:  true,
+			HostPID:       true,
+			HostNetwork:   true,
 			RestartPolicy: v1.RestartPolicyNever,
 			// 容器配置
 			Containers: []v1.Container{
@@ -2647,9 +2651,9 @@ func (h *ResourceHandler) GetCloudTTYStatus(c *gin.Context) {
 	clientset, err := h.clusterService.GetClientsetForUser(c.Request.Context(), uint(clusterID), currentUserID.(uint))
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
-			"code":     0,
-			"data":     gin.H{"installed": false},
-			"message":  "获取集群客户端失败",
+			"code":    0,
+			"data":    gin.H{"installed": false},
+			"message": "获取集群客户端失败",
 		})
 		return
 	}
@@ -2658,15 +2662,15 @@ func (h *ResourceHandler) GetCloudTTYStatus(c *gin.Context) {
 	_, err = clientset.AppsV1().Deployments("cloudtty-system").Get(c.Request.Context(), "cloudtty-controller-manager", metav1.GetOptions{})
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
-			"code":     0,
-			"data":     gin.H{"installed": false},
+			"code": 0,
+			"data": gin.H{"installed": false},
 		})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"code":     0,
-		"data":     gin.H{"installed": true},
+		"code": 0,
+		"data": gin.H{"installed": true},
 	})
 }
 
@@ -2763,7 +2767,7 @@ func (h *ResourceHandler) GetCloudTTYService(c *gin.Context) {
 		return
 	}
 
-	// 获取 clientset
+	// 获取 clientset（用于获取节点信息）
 	clientset, err := h.clusterService.GetClientsetForUser(c.Request.Context(), uint(clusterID), currentUserID.(uint))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -2773,53 +2777,162 @@ func (h *ResourceHandler) GetCloudTTYService(c *gin.Context) {
 		return
 	}
 
-	// 尝试获取CloudTTY Service
-	svc, err := clientset.CoreV1().Services("cloudtty-system").Get(c.Request.Context(), "cloudtty", metav1.GetOptions{})
+	// 获取集群的 kubeconfig 用于 kubectl 命令
+	kubeConfig, err := h.clusterService.GetClusterKubeConfig(c.Request.Context(), uint(clusterID))
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"code":     0,
-			"data":     nil,
-			"message":  "CloudTTY Service未找到",
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取集群 kubeconfig 失败",
 		})
 		return
 	}
 
-	// 获取Service的访问信息
-	var nodeIP string
-	var port int32
-
-	if svc.Spec.Type == v1.ServiceTypeNodePort {
-		// NodePort类型，返回节点IP和端口
-		if len(svc.Spec.Ports) > 0 {
-			port = svc.Spec.Ports[0].NodePort
-		}
-		// 获取集群节点列表，选择一个节点IP
-		nodes, err := clientset.CoreV1().Nodes().List(c.Request.Context(), metav1.ListOptions{})
-		if err == nil && len(nodes.Items) > 0 {
-			nodeIP = nodes.Items[0].Status.Addresses[0].Address
-		}
-	} else if svc.Spec.Type == v1.ServiceTypeLoadBalancer {
-		// LoadBalancer类型
-		if len(svc.Status.LoadBalancer.Ingress) > 0 {
-			nodeIP = svc.Status.LoadBalancer.Ingress[0].IP
-		}
-	} else {
-		// ClusterIP类型，无法从外部访问
-		c.JSON(http.StatusOK, gin.H{
-			"code":     0,
-			"data":     nil,
-			"message":  "CloudTTY Service类型不支持直接访问，请使用 NodePort 或 LoadBalancer",
+	// 将 kubeconfig 写入临时文件
+	tmpFile, err := os.CreateTemp("", "kubeconfig-*.yaml")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "创建临时文件失败",
 		})
 		return
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	if _, err := tmpFile.WriteString(kubeConfig); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "写入 kubeconfig 失败",
+		})
+		return
+	}
+
+	// 使用 kubectl 获取 cloudshell CR
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "kubectl", "get", "cloudshell", "-n", "cloudtty-system", "-o", "json")
+	cmd.Env = append(os.Environ(), "KUBECONFIG="+tmpFile.Name())
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"code":    0,
+			"data":    nil,
+			"message": fmt.Sprintf("CloudTTY cloudshell未找到: %v, output: %s", err, string(output)),
+		})
+		return
+	}
+
+	// 解析 JSON 输出
+	var result struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Status struct {
+				AccessURL string `json:"accessURL"`
+				Phase     string `json:"phase"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+
+	if err := json.Unmarshal(output, &result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": fmt.Sprintf("解析 cloudshell 数据失败: %v", err),
+		})
+		return
+	}
+
+	if len(result.Items) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"code":    0,
+			"data":    nil,
+			"message": "CloudTTY cloudshell 实例未找到",
+		})
+		return
+	}
+
+	// 获取第一个 cloudshell 实例
+	cloudshell := result.Items[0]
+
+	// 检查 cloudshell 状态是否就绪（Ready 或 Complete 都表示可用）
+	if cloudshell.Status.Phase != "Ready" && cloudshell.Status.Phase != "Complete" {
+		c.JSON(http.StatusOK, gin.H{
+			"code":    0,
+			"data":    nil,
+			"message": fmt.Sprintf("CloudTTY cloudshell 状态未就绪: %s", cloudshell.Status.Phase),
+		})
+		return
+	}
+
+	if cloudshell.Status.AccessURL == "" {
+		c.JSON(http.StatusOK, gin.H{
+			"code":    0,
+			"data":    nil,
+			"message": "CloudTTY cloudshell AccessURL 为空",
+		})
+		return
+	}
+
+	// 解析 AccessURL 提取端口号（格式: "IP:PORT"）
+	// 注意：IP 可能是 Service ClusterIP，我们需要使用节点 IP
+	accessURL := cloudshell.Status.AccessURL
+	parts := strings.Split(accessURL, ":")
+	if len(parts) != 2 {
+		c.JSON(http.StatusOK, gin.H{
+			"code":    0,
+			"data":    nil,
+			"message": fmt.Sprintf("CloudTTY AccessURL 格式错误: %s", accessURL),
+		})
+		return
+	}
+
+	nodePort := parts[1]
+
+	// 获取集群节点列表，选择一个节点的 IP
+	nodes, err := clientset.CoreV1().Nodes().List(c.Request.Context(), metav1.ListOptions{})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取节点列表失败",
+		})
+		return
+	}
+
+	if len(nodes.Items) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"code":    0,
+			"data":    nil,
+			"message": "集群中没有可用节点",
+		})
+		return
+	}
+
+	// 获取第一个节点的 IP（优先使用 InternalIP）
+	var nodeIP string
+	for _, addr := range nodes.Items[0].Status.Addresses {
+		if addr.Type == v1.NodeInternalIP {
+			nodeIP = addr.Address
+			break
+		}
+	}
+
+	if nodeIP == "" {
+		// 如果没有 InternalIP，使用第一个地址
+		nodeIP = nodes.Items[0].Status.Addresses[0].Address
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"code":     0,
+		"code": 0,
 		"data": gin.H{
-			"nodeIP":   nodeIP,
-			"port":     port,
-			"type":     string(svc.Spec.Type),
-			"path":     "/cloudtty",
+			"nodeIP":    nodeIP,
+			"port":      nodePort,
+			"type":      "NodePort",
+			"path":      "/",
+			"installed": true,
+			"ready":     true,
 		},
 	})
 }
@@ -2882,9 +2995,9 @@ func (h *ResourceHandler) CreateCloudTTYService(c *gin.Context) {
 			Type: v1.ServiceTypeNodePort,
 			Ports: []v1.ServicePort{
 				{
-					Port:     80,
+					Port:       80,
 					TargetPort: intstr.IntOrString{IntVal: 30000},
-					NodePort:  30000,
+					NodePort:   30000,
 				},
 			},
 			Selector: map[string]string{
@@ -2900,9 +3013,9 @@ func (h *ResourceHandler) CreateCloudTTYService(c *gin.Context) {
 				"code":    0,
 				"message": "CloudTTY Service已存在",
 				"data": gin.H{
-					"nodeIP":   nodeIP,
-					"port":     30000,
-					"path":     "/cloudtty",
+					"nodeIP": nodeIP,
+					"port":   30000,
+					"path":   "/cloudtty",
 				},
 			})
 			return
@@ -2920,9 +3033,345 @@ func (h *ResourceHandler) CreateCloudTTYService(c *gin.Context) {
 		"code":    0,
 		"message": "CloudTTY Service创建成功",
 		"data": gin.H{
-			"nodeIP":   nodeIP,
-			"port":     30000,
-			"path":     "/cloudtty",
+			"nodeIP": nodeIP,
+			"port":   30000,
+			"path":   "/cloudtty",
 		},
 	})
+}
+
+// WorkloadInfo 工作负载信息
+type WorkloadInfo struct {
+	Name        string            `json:"name"`
+	Namespace   string            `json:"namespace"`
+	Type        string            `json:"type"`
+	Labels      map[string]string `json:"labels"`
+	ReadyPods   int32             `json:"readyPods"`
+	DesiredPods int32             `json:"desiredPods"`
+	Requests    *ResourceInfo     `json:"requests,omitempty"`
+	Limits      *ResourceInfo     `json:"limits,omitempty"`
+	Images      []string          `json:"images,omitempty"`
+	CreatedAt   string            `json:"createdAt"`
+	UpdatedAt   string            `json:"updatedAt"`
+}
+
+// ResourceInfo 资源信息
+type ResourceInfo struct {
+	CPU    string `json:"cpu"`
+	Memory string `json:"memory"`
+}
+
+// GetWorkloads 获取工作负载列表
+func (h *ResourceHandler) GetWorkloads(c *gin.Context) {
+	// 获取参数
+	clusterIDStr := c.Query("clusterId")
+	clusterID, err := strconv.Atoi(clusterIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的集群ID",
+		})
+		return
+	}
+
+	workloadType := c.Query("type")   // Deployment, StatefulSet, DaemonSet, Job, CronJob
+	namespace := c.Query("namespace") // 命名空间过滤
+
+	// 获取 clientset
+	clientset, err := h.clusterService.GetClientsetForUser(c.Request.Context(), uint(clusterID), uint(c.GetInt("userId")))
+	if err != nil {
+		if h.handleGetClientsetError(c, err) {
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取集群连接失败: " + err.Error(),
+		})
+		return
+	}
+
+	fmt.Printf("📊 [GetWorkloads] 用户 %d 查询集群 %d 的工作负载列表, 类型: %s, 命名空间: %s\n",
+		c.GetInt("userId"), clusterID, workloadType, namespace)
+
+	var workloads []WorkloadInfo
+	ctx := c.Request.Context()
+
+	// 根据类型查询不同的工作负载
+	switch workloadType {
+	case "Deployment", "":
+		// 获取 Deployments
+		deployments, err := clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
+		if err == nil {
+			for _, deploy := range deployments.Items {
+				workload := h.convertDeploymentToWorkload(&deploy)
+				workloads = append(workloads, workload)
+			}
+		}
+
+	case "StatefulSet":
+		// 获取 StatefulSets
+		stsList, err := clientset.AppsV1().StatefulSets(namespace).List(ctx, metav1.ListOptions{})
+		if err == nil {
+			for _, sts := range stsList.Items {
+				workload := h.convertStatefulSetToWorkload(&sts)
+				workloads = append(workloads, workload)
+			}
+		}
+
+	case "DaemonSet":
+		// 获取 DaemonSets
+		dsList, err := clientset.AppsV1().DaemonSets(namespace).List(ctx, metav1.ListOptions{})
+		if err == nil {
+			for _, ds := range dsList.Items {
+				workload := h.convertDaemonSetToWorkload(&ds)
+				workloads = append(workloads, workload)
+			}
+		}
+
+	case "Job":
+		// 获取 Jobs
+		jobList, err := clientset.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{})
+		if err == nil {
+			for _, job := range jobList.Items {
+				workload := h.convertJobToWorkload(&job)
+				workloads = append(workloads, workload)
+			}
+		}
+
+	case "CronJob":
+		// 获取 CronJobs
+		cronJobList, err := clientset.BatchV1().CronJobs(namespace).List(ctx, metav1.ListOptions{})
+		if err == nil {
+			for _, cronJob := range cronJobList.Items {
+				workload := h.convertCronJobToWorkload(&cronJob)
+				workloads = append(workloads, workload)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data":    workloads,
+	})
+}
+
+// convertDeploymentToWorkload 将 Deployment 转换为 WorkloadInfo
+func (h *ResourceHandler) convertDeploymentToWorkload(deploy *appsv1.Deployment) WorkloadInfo {
+	// 计算 Pod 数量
+	readyPods := deploy.Status.ReadyReplicas
+	desiredPods := deploy.Status.Replicas
+
+	// 获取镜像和资源信息
+	var images []string
+	var requests, limits *ResourceInfo
+
+	if len(deploy.Spec.Template.Spec.Containers) > 0 {
+		for _, container := range deploy.Spec.Template.Spec.Containers {
+			images = append(images, container.Image)
+		}
+		requests, limits = h.getResourceInfo(deploy.Spec.Template.Spec.Containers)
+	}
+
+	return WorkloadInfo{
+		Name:        deploy.Name,
+		Namespace:   deploy.Namespace,
+		Type:        "Deployment",
+		Labels:      deploy.Labels,
+		ReadyPods:   readyPods,
+		DesiredPods: desiredPods,
+		Requests:    requests,
+		Limits:      limits,
+		Images:      images,
+		CreatedAt:   deploy.CreationTimestamp.Format("2006-01-02 15:04:05"),
+		UpdatedAt:   deploy.CreationTimestamp.Format("2006-01-02 15:04:05"),
+	}
+}
+
+// convertStatefulSetToWorkload 将 StatefulSet 转换为 WorkloadInfo
+func (h *ResourceHandler) convertStatefulSetToWorkload(sts *appsv1.StatefulSet) WorkloadInfo {
+	readyPods := sts.Status.ReadyReplicas
+	desiredPods := sts.Status.Replicas
+
+	var images []string
+	var requests, limits *ResourceInfo
+
+	if len(sts.Spec.Template.Spec.Containers) > 0 {
+		for _, container := range sts.Spec.Template.Spec.Containers {
+			images = append(images, container.Image)
+		}
+		requests, limits = h.getResourceInfo(sts.Spec.Template.Spec.Containers)
+	}
+
+	return WorkloadInfo{
+		Name:        sts.Name,
+		Namespace:   sts.Namespace,
+		Type:        "StatefulSet",
+		Labels:      sts.Labels,
+		ReadyPods:   readyPods,
+		DesiredPods: desiredPods,
+		Requests:    requests,
+		Limits:      limits,
+		Images:      images,
+		CreatedAt:   sts.CreationTimestamp.Format("2006-01-02 15:04:05"),
+		UpdatedAt:   sts.CreationTimestamp.Format("2006-01-02 15:04:05"),
+	}
+}
+
+// convertDaemonSetToWorkload 将 DaemonSet 转换为 WorkloadInfo
+func (h *ResourceHandler) convertDaemonSetToWorkload(ds *appsv1.DaemonSet) WorkloadInfo {
+	readyPods := ds.Status.NumberReady
+	desiredPods := ds.Status.DesiredNumberScheduled
+
+	var images []string
+	var requests, limits *ResourceInfo
+
+	if len(ds.Spec.Template.Spec.Containers) > 0 {
+		for _, container := range ds.Spec.Template.Spec.Containers {
+			images = append(images, container.Image)
+		}
+		requests, limits = h.getResourceInfo(ds.Spec.Template.Spec.Containers)
+	}
+
+	return WorkloadInfo{
+		Name:        ds.Name,
+		Namespace:   ds.Namespace,
+		Type:        "DaemonSet",
+		Labels:      ds.Labels,
+		ReadyPods:   readyPods,
+		DesiredPods: desiredPods,
+		Requests:    requests,
+		Limits:      limits,
+		Images:      images,
+		CreatedAt:   ds.CreationTimestamp.Format("2006-01-02 15:04:05"),
+		UpdatedAt:   ds.CreationTimestamp.Format("2006-01-02 15:04:05"),
+	}
+}
+
+// convertJobToWorkload 将 Job 转换为 WorkloadInfo
+func (h *ResourceHandler) convertJobToWorkload(job *batchv1.Job) WorkloadInfo {
+	readyPods := job.Status.Succeeded
+	desiredPods := *job.Spec.Parallelism
+
+	var images []string
+	var requests, limits *ResourceInfo
+
+	if len(job.Spec.Template.Spec.Containers) > 0 {
+		for _, container := range job.Spec.Template.Spec.Containers {
+			images = append(images, container.Image)
+		}
+		requests, limits = h.getResourceInfo(job.Spec.Template.Spec.Containers)
+	}
+
+	return WorkloadInfo{
+		Name:        job.Name,
+		Namespace:   job.Namespace,
+		Type:        "Job",
+		Labels:      job.Labels,
+		ReadyPods:   readyPods,
+		DesiredPods: desiredPods,
+		Requests:    requests,
+		Limits:      limits,
+		Images:      images,
+		CreatedAt:   job.CreationTimestamp.Format("2006-01-02 15:04:05"),
+		UpdatedAt:   job.CreationTimestamp.Format("2006-01-02 15:04:05"),
+	}
+}
+
+// convertCronJobToWorkload 将 CronJob 转换为 WorkloadInfo
+func (h *ResourceHandler) convertCronJobToWorkload(cronJob *batchv1.CronJob) WorkloadInfo {
+	var images []string
+	var requests, limits *ResourceInfo
+
+	if len(cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers) > 0 {
+		for _, container := range cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers {
+			images = append(images, container.Image)
+		}
+		requests, limits = h.getResourceInfo(cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers)
+	}
+
+	return WorkloadInfo{
+		Name:        cronJob.Name,
+		Namespace:   cronJob.Namespace,
+		Type:        "CronJob",
+		Labels:      cronJob.Labels,
+		ReadyPods:   0,
+		DesiredPods: 0,
+		Requests:    requests,
+		Limits:      limits,
+		Images:      images,
+		CreatedAt:   cronJob.CreationTimestamp.Format("2006-01-02 15:04:05"),
+		UpdatedAt:   cronJob.CreationTimestamp.Format("2006-01-02 15:04:05"),
+	}
+}
+
+// getResourceInfo 获取容器的资源信息
+func (h *ResourceHandler) getResourceInfo(containers []v1.Container) (requests, limits *ResourceInfo) {
+	var totalCPUReq, totalMemReq int64
+	var totalCPULim, totalMemLim int64
+
+	for _, container := range containers {
+		if container.Resources.Requests != nil {
+			totalCPUReq += container.Resources.Requests.Cpu().MilliValue()
+			totalMemReq += container.Resources.Requests.Memory().Value()
+		}
+		if container.Resources.Limits != nil {
+			totalCPULim += container.Resources.Limits.Cpu().MilliValue()
+			totalMemLim += container.Resources.Limits.Memory().Value()
+		}
+	}
+
+	if totalCPUReq > 0 || totalMemReq > 0 {
+		requests = &ResourceInfo{
+			CPU:    formatCPU(totalCPUReq),
+			Memory: formatMemory(totalMemReq),
+		}
+	}
+
+	if totalCPULim > 0 || totalMemLim > 0 {
+		limits = &ResourceInfo{
+			CPU:    formatCPU(totalCPULim),
+			Memory: formatMemory(totalMemLim),
+		}
+	}
+
+	return requests, limits
+}
+
+// formatCPU 格式化 CPU
+func formatCPU(milliValue int64) string {
+	if milliValue == 0 {
+		return ""
+	}
+	if milliValue < 1000 {
+		return fmt.Sprintf("%dm", milliValue)
+	}
+	return fmt.Sprintf("%.2f", float64(milliValue)/1000)
+}
+
+// formatMemory 格式化内存
+func formatMemory(bytes int64) string {
+	if bytes == 0 {
+		return ""
+	}
+
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+		TB = 1024 * GB
+	)
+
+	switch {
+	case bytes >= TB:
+		return fmt.Sprintf("%.2fTi", float64(bytes)/float64(TB))
+	case bytes >= GB:
+		return fmt.Sprintf("%.2fGi", float64(bytes)/float64(GB))
+	case bytes >= MB:
+		return fmt.Sprintf("%.2fMi", float64(bytes)/float64(MB))
+	case bytes >= KB:
+		return fmt.Sprintf("%.2fKi", float64(bytes)/float64(KB))
+	default:
+		return fmt.Sprintf("%d", bytes)
+	}
 }

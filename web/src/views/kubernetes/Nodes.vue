@@ -174,13 +174,16 @@
           </el-steps>
 
           <h4 style="margin-top: 20px">部署命令：</h4>
-          <el-input
-            type="textarea"
-            :rows="14"
-            readonly
-            :model-value="cloudttyCommands"
-            class="command-textarea"
-          />
+          <div class="code-block-wrapper">
+            <div class="code-line-numbers">
+              <div v-for="line in cloudttyCommandLines" :key="line" class="code-line-number">{{ line }}</div>
+            </div>
+            <textarea
+              readonly
+              :value="cloudttyCommands"
+              class="code-textarea"
+            ></textarea>
+          </div>
           <el-button
             type="primary"
             @click="copyCommands"
@@ -213,7 +216,7 @@
       @close="handleCloseCloudTTY"
       class="cloudtty-terminal-dialog"
     >
-      <div class="cloudtty-terminal-wrapper">
+      <div class="cloudtty-terminal-wrapper" @click="focusCloudTTYIframe">
         <iframe
           v-if="cloudttyTerminalVisible"
           id="cloudtty-iframe"
@@ -621,34 +624,66 @@ const deployProgress = ref(0)
 const deployStatus = ref<'success' | 'exception' | ''>('')
 const deployMessage = ref('')
 const deployMethod = ref('auto')
-const cloudttyCommands = ref(`# CloudTTY 部署命令
-
-# 方法1: 使用 Helm 部署 (推荐)
-# 1. 添加 CloudTTY Helm 仓库
+const cloudttyCommands = ref(`#1、安装并等待 Pod 运行起来
 helm repo add cloudtty https://cloudtty.github.io/cloudtty
-
-# 2. 更新仓库
 helm repo update
+helm install cloudtty-operator cloudtty/cloudtty \\
+  --version 0.5.0 \\
+  --create-namespace \\
+  --namespace cloudtty-system
 
-# 3. 安装 CloudTTY
-helm install cloudtty cloudtty/cloudtty -n cloudtty-system --create-namespace
+#2、创建 cloudshell.yaml
+cat <<EOF > cloudshell.yaml
+apiVersion: cloudshell.cloudtty.io/v1alpha1
+kind: CloudShell
+metadata:
+  name: permanent-terminal
+  namespace: cloudtty-system
+spec:
+  # 命令 - 使用交互式 bash
+  commandAction: "bash -il"
+  # 暴露方式
+  exposureMode: NodePort
+  # 单次连接模式 - false 表示允许多次连接
+  once: false
+  # 不自动清理
+  cleanup: false
+  ttlSecondsAfterStarted: 315360000
+  # 允许 URL 参数
+  urlArg: true
+  # 环境变量 - 配置 ttyd 参数
+  env:
+  - name: TTYD_WRITABLE
+    value: "true"
+  - name: TTYD_SERVER_BUFFER_SIZE
+    value: "4096"
+  - name: TTYD_CLIENT_BUFFER_SIZE
+    value: "4096"
+  # ttyd 客户端选项
+  ttydClientOptions:
+    fontSize: "14"
+    fontFamily: "Monaco, Menlo, Consolas, 'Courier New', monospace"
+    cursorBlink: "true"
+    rendererType: "canvas"
+  # 镜像
+  image: "cloudshell/cloudshell:latest"
+EOF
 
-# 方法2: 使用 kubectl 部署
-kubectl apply -f https://raw.githubusercontent.com/cloudtty/cloudtty/main/config/crd/bases/cloudtty.cloudtty.io_cloudshells.yaml
-kubectl apply -f https://raw.githubusercontent.com/cloudtty/cloudtty/main/config/crd/bases/cloudtty.cloudtty.io_clouddesktops.yaml
-kubectl apply -f https://raw.githubusercontent.com/cloudtty/cloudtty/main/config/release/controller/deployment.yaml
+kubectl apply -f cloudshell.yaml
 
-# 验证安装
-kubectl get pods -n cloudtty-system
-kubectl get cloudshell -n cloudtty-system
-
-# 访问 CloudTTY
-# 安装完成后，访问: http://<NodeIP>:30000`)
+#3、观察 CR 状态，获取访问接入点
+kubectl get cloudshell -w`)
 
 // 计算YAML行数
 const yamlLineCount = computed(() => {
   if (!yamlContent.value) return 1
   return yamlContent.value.split('\n').length
+})
+
+// 计算CloudTTY命令行数
+const cloudttyCommandLines = computed(() => {
+  if (!cloudttyCommands.value) return 1
+  return cloudttyCommands.value.split('\n').length
 })
 
 // 过滤后的节点列表
@@ -1290,9 +1325,11 @@ const handleShell = async () => {
     const path = service.path || '/cloudtty'
 
     // 构建CloudTTY访问地址
-    const cloudttyUrl = `http://${nodeIp}:${port}${path}?clusterId=${selectedClusterId.value}&node=${selectedNode.value.name}&token=${token}`
+    // CloudTTY NodePort 模式下，直接访问服务地址即可
+    const cloudttyUrl = `http://${nodeIp}:${port}/`
 
     console.log('CloudTTY URL:', cloudttyUrl)
+    console.log('Node:', selectedNode.value.name)
 
     // 打开 CloudTTY 终端对话框
     cloudttyTerminalVisible.value = true
@@ -1301,6 +1338,14 @@ const handleShell = async () => {
       const iframe = document.getElementById('cloudtty-iframe') as HTMLIFrameElement
       if (iframe) {
         iframe.src = cloudttyUrl
+        // 添加焦点处理，确保 iframe 可以接收键盘输入
+        iframe.addEventListener('load', () => {
+          try {
+            iframe.contentWindow?.focus()
+          } catch (e) {
+            console.log('无法设置 iframe 焦点:', e)
+          }
+        })
       }
     })
   } catch (error: any) {
@@ -1316,6 +1361,19 @@ const handleCloseCloudTTY = () => {
     iframe.src = '' // 清空iframe以停止加载
   }
   cloudttyTerminalVisible.value = false
+}
+
+// 聚焦 CloudTTY iframe
+const focusCloudTTYIframe = () => {
+  const iframe = document.getElementById('cloudtty-iframe') as HTMLIFrameElement
+  if (iframe && iframe.contentWindow) {
+    try {
+      iframe.contentWindow.focus()
+      console.log('CloudTTY iframe 已聚焦')
+    } catch (e) {
+      console.log('无法聚焦 iframe:', e)
+    }
+  }
 }
 
 // Shell 终端初始化
@@ -1703,13 +1761,54 @@ onMounted(() => {
       }
     }
 
-    .manual-deploy-commands {
-      margin-top: 20px;
+    .code-block-wrapper {
+      display: flex;
+      border: 1px solid #d4af37;
+      border-radius: 6px;
+      overflow: hidden;
+      background-color: #000000;
+      margin-top: 10px;
+    }
 
-      .command-textarea {
-        font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
-        font-size: 12px;
-      }
+    .code-line-numbers {
+      background-color: #0d0d0d;
+      color: #666;
+      padding: 16px 8px;
+      text-align: right;
+      font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      user-select: none;
+      overflow: hidden;
+      min-width: 40px;
+      border-right: 1px solid #333;
+    }
+
+    .code-line-number {
+      height: 19.2px;
+      line-height: 1.6;
+    }
+
+    .code-textarea {
+      flex: 1;
+      background-color: #000000;
+      color: #d4af37;
+      border: none;
+      outline: none;
+      padding: 16px;
+      font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      resize: none;
+      min-height: 400px;
+    }
+
+    .code-textarea::placeholder {
+      color: #555;
+    }
+
+    .code-textarea:focus {
+      outline: none;
     }
   }
 }
