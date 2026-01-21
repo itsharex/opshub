@@ -35,8 +35,10 @@ func (r *assetPermissionRepo) CreateBatch(ctx context.Context, roleID, assetGrou
 
 // CreateBatchWithPermissions 批量创建资产权限（支持指定操作权限）
 func (r *assetPermissionRepo) CreateBatchWithPermissions(ctx context.Context, roleID, assetGroupID uint, hostIDs []uint, permissions uint) error {
-	// 先删除该角色对该资产分组的所有现有权限
-	if err := r.DeleteByRoleAndGroup(ctx, roleID, assetGroupID); err != nil {
+	// 先硬删除该角色对该资产分组的所有现有权限（包括已软删除的）
+	if err := r.db.WithContext(ctx).
+		Where("role_id = ? AND asset_group_id = ?", roleID, assetGroupID).
+		Unscoped().Delete(&rbac.SysRoleAssetPermission{}).Error; err != nil {
 		return err
 	}
 
@@ -127,8 +129,10 @@ func (r *assetPermissionRepo) GetDetailByID(ctx context.Context, id uint) (*rbac
 
 // UpdateAssetPermission 更新权限配置（支持修改角色、分组、主机、权限）
 func (r *assetPermissionRepo) UpdateAssetPermission(ctx context.Context, id uint, roleID, assetGroupID uint, hostIDs []uint, permissions uint) error {
-	// 首先删除该权限的旧记录
-	if err := r.db.WithContext(ctx).Delete(&rbac.SysRoleAssetPermission{}, id).Error; err != nil {
+	// 首先硬删除该权限的旧记录（包括软删除的）
+	if err := r.db.WithContext(ctx).Model(&rbac.SysRoleAssetPermission{}).
+		Where("id = ?", id).
+		Unscoped().Delete(&rbac.SysRoleAssetPermission{}).Error; err != nil {
 		return err
 	}
 

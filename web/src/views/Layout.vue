@@ -90,7 +90,10 @@
       </el-header>
 
       <el-main>
-        <router-view />
+        <!-- 无权限时显示无权限页面 -->
+        <NoPermission v-if="hasNoPermission" />
+        <!-- 有权限时显示正常内容 -->
+        <router-view v-else />
       </el-main>
     </el-container>
   </el-container>
@@ -101,6 +104,7 @@ import { computed, ref, onMounted, onUnmounted, shallowRef } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { ElMessage } from 'element-plus'
+import NoPermission from '@/views/NoPermission.vue'
 import {
   HomeFilled,
   User,
@@ -178,6 +182,7 @@ const userRoleDisplay = computed(() => {
 })
 
 const menuList = ref<any[]>([])
+const hasNoPermission = ref(false) // 用户是否没有任何权限
 
 // 图标映射
 const iconMap: Record<string, any> = {
@@ -214,6 +219,11 @@ const getIcon = (iconName: string) => {
 const buildPluginMenus = async (authorizedPaths: Set<string>) => {
   const pluginMenus: any[] = []
   const allPlugins = pluginManager.getAll() // 获取所有注册的插件
+
+  // 检查当前用户是否是超级管理员
+  const roles = userStore.userInfo?.roles || []
+  const isSuperAdmin = roles.some((r: any) => r.code === 'admin')
+  console.log('[Layout] 是否超级管理员:', isSuperAdmin)
 
   // 从后端API获取插件启用状态
   let enabledPluginNames: Set<string> = new Set()
@@ -267,9 +277,11 @@ const buildPluginMenus = async (authorizedPaths: Set<string>) => {
       console.log(`  - 菜单数量: ${menus.length}`)
 
       menus.forEach(menu => {
-        // 权限过滤：只显示用户有权限的菜单
-        // authorizedPaths为空表示是超级管理员，显示所有菜单
-        if (authorizedPaths.size > 0 && !authorizedPaths.has(menu.path)) {
+        // 权限过滤：
+        // 1. 超级管理员显示所有菜单
+        // 2. 普通用户只显示有权限的菜单
+        // 3. 用户没有任何权限且不是超级管理员，不显示任何菜单
+        if (!isSuperAdmin && !authorizedPaths.has(menu.path)) {
           console.log(`  - 跳过无权限的菜单: ${menu.name} (${menu.path})`)
           return
         }
@@ -507,6 +519,17 @@ const loadMenu = async () => {
     // 6. 构建菜单树
     menuList.value = buildMenuTree(allMenus)
     console.log('[Layout] 最终菜单树:', menuList.value)
+
+    // 检查用户是否有权限
+    // 如果不是超级管理员且没有任何菜单，则显示无权限页面
+    const roles = userStore.userInfo?.roles || []
+    const isSuperAdmin = roles.some((r: any) => r.code === 'admin')
+    if (!isSuperAdmin && menuList.value.length === 0) {
+      hasNoPermission.value = true
+      console.log('[Layout] 用户没有任何权限，显示无权限页面')
+    } else {
+      hasNoPermission.value = false
+    }
   } catch (error) {
     console.error('[Layout] 加载菜单失败:', error)
     ElMessage.error('加载菜单失败')
