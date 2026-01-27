@@ -52,6 +52,31 @@ OpsHub 是一个功能强大的**插件化运维管理平台**，采用前后端
 - SSH 终端会话录制与回放
 - 数据变更追溯
 
+### 📜 项目演示图
+  <table>
+    <tr>
+      <td><img src="./docs/images/login.png" alt="登录页面"/></td>
+      <td><img src="./docs/images/dashboard.png" alt="首页概览"/></td>
+    </tr>
+    <tr>
+      <td><img src="./docs/images/hosts.png" alt="资产管理"/></td>
+      <td><img src="./docs/images/terminal.png" alt="终端连接"/></td>
+    </tr>
+    <tr>
+      <td><img src="./docs/images/clusters.png" alt="K8s集群"/></td>
+      <td><img src="./docs/images/workloads.png" alt="节点管理"/></td>
+    </tr>
+    <tr>
+      <td><img src="./docs/images/health.png" alt="应用诊断"/></td>
+      <td><img src="./docs/images/flame.png" alt="火焰图"/></td>
+    </tr>
+    <tr>
+      <td><img src="./docs/images/xj.png" alt="集群巡检"/></td>
+      <td><img src="./docs/images/ym.png" alt="域名监控"/></td>
+    </tr>
+
+  </table>
+
 ---
 
 ## 🚀 功能特性
@@ -225,7 +250,7 @@ docker-compose up -d
 
 ## 🏗️ 系统架构
 
-![img.png](img.png)
+![img.png](docs/images/img.png)
 
 ---
 
@@ -279,7 +304,7 @@ opshub/
 ## 📞 联系方式
 
 - 📮 Issue: [GitHub Issues](https://github.com/ydcloud-dy/opshub/issues)
-- 📧 Email: support@opshub.io
+- 📧 Email: dycloudlove@163.com
 
 ---
 
