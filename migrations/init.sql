@@ -8,7 +8,7 @@ SET FOREIGN_KEY_CHECKS = 0;
 -- ============================================================
 -- 1. RBAC 系统表
 -- ============================================================
-
+--
 -- 用户表
 CREATE TABLE IF NOT EXISTS `sys_user` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
