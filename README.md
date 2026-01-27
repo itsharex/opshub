@@ -95,15 +95,16 @@ OpsHub 是一个功能强大的**插件化运维管理平台**，采用前后端
 
 #### ☸️ Kubernetes 容器管理
 
-| 功能 | 描述 |
-|:-----|:-----|
-| 集群管理 | 多集群接入、集群概览、健康检查 |
-| 节点管理 | 节点列表、资源监控、污点/标签管理 |
-| 工作负载 | Deployment、StatefulSet、DaemonSet、Job 管理 |
-| 网络管理 | Service、Ingress、NetworkPolicy 管理 |
-| 配置存储 | ConfigMap、Secret、PV/PVC 管理 |
-| 终端审计 | Web Terminal、会话录制与回放 |
-| 集群巡检 | 一键生成 K8S 巡检报告 |
+| 功能        | 描述                                      |
+|:----------|:----------------------------------------|
+| 集群管理      | 多集群接入、集群概览、健康检查                         |
+| 节点管理      | 节点列表、资源监控、污点/标签管理                       |
+| 工作负载      | Deployment、StatefulSet、DaemonSet、Job 管理 |
+| 网络管理      | Service、Ingress、NetworkPolicy 管理        |
+| 配置存储      | ConfigMap、Secret、PV/PVC 管理              |
+| 终端审计      | Web Terminal、会话录制与回放                    |
+| 应用诊断（未完成） | 针对JAVA应用进行分析（堆栈，火焰图生成）                  |
+| 集群巡检      | 一键生成 K8S 巡检报告                           |
 
 #### ✅ 任务中心
 
