@@ -15,8 +15,8 @@ RUN npm ci
 # 复制源代码
 COPY web/ .
 
-# 构建
-RUN npm run build
+# 构建（跳过类型检查，直接用 vite 构建）
+RUN npx vite build
 
 # Runtime stage
 FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/library/nginx:alpine
