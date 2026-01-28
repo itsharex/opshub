@@ -66,18 +66,6 @@ Task 任务中心插件提供强大的任务编排与执行能力，支持脚本
 4. 点击「启用」按钮
 5. 刷新页面，左侧菜单出现「任务中心」
 
-### 通过 API 启用
-
-```bash
-# 启用插件
-curl -X POST http://localhost:9876/api/v1/plugins/task/enable \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN"
-
-# 禁用插件
-curl -X POST http://localhost:9876/api/v1/plugins/task/disable \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN"
-```
-
 ---
 
 ## 使用指南

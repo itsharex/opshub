@@ -65,17 +65,7 @@ Monitor 监控中心插件提供全面的域名监控、SSL 证书监控、告�
 4. 点击「启用」按钮
 5. 刷新页面，左侧菜单出现「监控中心」
 
-### 通过 API 启用
 
-```bash
-# 启用插件
-curl -X POST http://localhost:9876/api/v1/plugins/monitor/enable \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN"
-
-# 禁用插件
-curl -X POST http://localhost:9876/api/v1/plugins/monitor/disable \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN"
-```
 
 ---
 

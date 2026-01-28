@@ -231,7 +231,7 @@ cd opshub
 docker-compose up -d
 
 # 访问系统
-# 前端：http://localhost:3000
+# 前端：http://localhost:5173
 # 后端：http://localhost:9876
 ```
 
