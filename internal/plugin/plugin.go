@@ -28,29 +28,29 @@ import (
 )
 
 // Plugin 插件接口
-// All plugins must implement this interface
+// 所有插件必须实现该接口
 type Plugin interface {
-	// Name Plugin unique identifier
+	// 插件名
 	Name() string
 
-	// Description Plugin description
+	// 插件描述
 	Description() string
 
-	// Version Plugin version
+	// 插件版本
 	Version() string
 
-	// Author Plugin author
+	// 插件作者
 	Author() string
 
-	// Enable Enable plugin
+	// 启用插件
 	// Initialize plugin resources, database tables, etc.
 	Enable(db *gorm.DB) error
 
-	// Disable Disable plugin
+	// 关闭插件
 	// Clean up plugin resources (note: won't delete database tables by default)
 	Disable(db *gorm.DB) error
 
-	// RegisterRoutes Register routes
+	// 注册插件路由到系统路由
 	// Plugin can register its API routes here
 	RegisterRoutes(router *gin.RouterGroup, db *gorm.DB)
 
