@@ -11,6 +11,7 @@ import { pluginManager } from './plugins/manager'
 // 导入插件（插件会自动注册到 pluginManager）
 import '@/plugins/kubernetes'
 import '@/plugins/monitor'
+import '@/plugins/nginx'
 import '@/plugins/task'
 import '@/plugins/test'
 const app = createApp(App)
