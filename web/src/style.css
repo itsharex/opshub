@@ -34,6 +34,22 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* 修复弹窗打开时滚动条消失导致的页面抖动问题 */
+html {
+  overflow-y: scroll;
+}
+
+/* 修复 Element Plus Dialog 打开时添加 padding-right 导致的页面抖动 */
+body.el-popup-parent--hidden {
+  padding-right: 0 !important;
+  overflow: hidden !important;
+}
+
+/* 确保 Dialog 遮罩层不影响布局 */
+.el-overlay {
+  overflow: hidden !important;
+}
+
 a {
   font-weight: 500;
   color: #646cff;

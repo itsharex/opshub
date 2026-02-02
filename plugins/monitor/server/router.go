@@ -36,14 +36,21 @@ func RegisterRoutes(router *gin.RouterGroup, db *gorm.DB) {
 		// 域名监控路由组
 		domains := monitorGroup.Group("/domains")
 		{
-			domains.GET("", handler.ListDomains)               // 获取域名监控列表
-			domains.GET("/stats", handler.GetStats)            // 获取统计数据
-			domains.GET("/:id", handler.GetDomain)             // 获取域名监控详情
+			domains.GET("", handler.ListDomains)                 // 获取域名监控列表
+			domains.GET("/stats", handler.GetStats)              // 获取统计数据
+			domains.GET("/:id", handler.GetDomain)               // 获取域名监控详情
 			domains.GET("/:id/history", handler.GetCheckHistory) // 获取检查历史
-			domains.POST("", handler.CreateDomain)             // 创建域名监控
-			domains.PUT("/:id", handler.UpdateDomain)          // 更新域名监控
-			domains.DELETE("/:id", handler.DeleteDomain)       // 删除域名监控
-			domains.POST("/:id/check", handler.CheckDomain)    // 立即检查域名
+			domains.POST("", handler.CreateDomain)               // 创建域名监控
+			domains.PUT("/:id", handler.UpdateDomain)            // 更新域名监控
+			domains.DELETE("/:id", handler.DeleteDomain)         // 删除域名监控
+			domains.POST("/:id/check", handler.CheckDomain)      // 立即检查域名
+		}
+
+		// 证书管理路由组
+		certificates := monitorGroup.Group("/certificates")
+		{
+			certificates.POST("/upload", handler.UploadCertificate)     // 上传证书文件
+			certificates.POST("/validate", handler.ValidateCertificate) // 验证证书内容
 		}
 
 		// 告警配置路由组
@@ -52,11 +59,11 @@ func RegisterRoutes(router *gin.RouterGroup, db *gorm.DB) {
 			// 告警通道管理
 			channels := alerts.Group("/channels")
 			{
-				channels.GET("", alertHandler.ListAlertChannels)           // 获取告警通道列表
-				channels.GET("/:id", alertHandler.GetAlertChannel)         // 获取告警通道详情
-				channels.POST("", alertHandler.CreateAlertChannel)         // 创建告警通道
-				channels.PUT("/:id", alertHandler.UpdateAlertChannel)      // 更新告警通道
-				channels.DELETE("/:id", alertHandler.DeleteAlertChannel)   // 删除告警通道
+				channels.GET("", alertHandler.ListAlertChannels)         // 获取告警通道列表
+				channels.GET("/:id", alertHandler.GetAlertChannel)       // 获取告警通道详情
+				channels.POST("", alertHandler.CreateAlertChannel)       // 创建告警通道
+				channels.PUT("/:id", alertHandler.UpdateAlertChannel)    // 更新告警通道
+				channels.DELETE("/:id", alertHandler.DeleteAlertChannel) // 删除告警通道
 			}
 
 			// 告警接收人管理
@@ -72,21 +79,21 @@ func RegisterRoutes(router *gin.RouterGroup, db *gorm.DB) {
 			// 告警接收人与通道关联管理
 			receiverChannels := alerts.Group("/receiver-channels")
 			{
-				receiverChannels.GET("/:receiverId", alertHandler.ListReceiverChannels)                    // 获取接收人的通道关联列表
-				receiverChannels.POST("/:receiverId", alertHandler.AddReceiverChannel)                     // 添加接收人通道关联
-				receiverChannels.DELETE("/:receiverId/:channelId", alertHandler.RemoveReceiverChannel)     // 删除接收人通道关联
-				receiverChannels.PUT("/:receiverId/:channelId", alertHandler.UpdateReceiverChannelConfig)  // 更新接收人通道关联配置
+				receiverChannels.GET("/:receiverId", alertHandler.ListReceiverChannels)                   // 获取接收人的通道关联列表
+				receiverChannels.POST("/:receiverId", alertHandler.AddReceiverChannel)                    // 添加接收人通道关联
+				receiverChannels.DELETE("/:receiverId/:channelId", alertHandler.RemoveReceiverChannel)    // 删除接收人通道关联
+				receiverChannels.PUT("/:receiverId/:channelId", alertHandler.UpdateReceiverChannelConfig) // 更新接收人通道关联配置
 			}
 
 			// 告警日志管理
 			logs := alerts.Group("/logs")
 			{
-				logs.GET("", alertHandler.ListAlertLogs)                   // 获取告警日志列表
-				logs.GET("/stats", alertHandler.GetAlertStats)             // 获取告警日志统计
+				logs.GET("", alertHandler.ListAlertLogs)       // 获取告警日志列表
+				logs.GET("/stats", alertHandler.GetAlertStats) // 获取告警日志统计
 			}
 
 			// 告警统计
-			alerts.GET("/stats", alertHandler.GetAlertStats)              // 获取告警统计信息
+			alerts.GET("/stats", alertHandler.GetAlertStats) // 获取告警统计信息
 		}
 	}
 }

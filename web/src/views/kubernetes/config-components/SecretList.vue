@@ -170,6 +170,18 @@
           <el-tab-pane label="数据" name="data">
             <div class="tab-content">
               <div class="data-section">
+                <!-- TLS 类型提示 -->
+                <el-alert
+                  v-if="formData.type === 'kubernetes.io/tls'"
+                  type="info"
+                  :closable="false"
+                  show-icon
+                  style="margin-bottom: 12px;"
+                >
+                  <template #title>
+                    TLS Secret 需要上传证书文件（.crt/.pem）和私钥文件（.key），系统将自动命名为 tls.crt 和 tls.key
+                  </template>
+                </el-alert>
                 <div class="section-header">
                   <span class="section-title">Data</span>
                   <div class="section-actions">
@@ -610,6 +622,16 @@ const handleSaveForm = async () => {
     return
   }
 
+  // TLS 类型 Secret 验证
+  if (formData.value.type === 'kubernetes.io/tls') {
+    const hasCrt = formData.value.data.some(d => d.key === 'tls.crt' && d.value)
+    const hasKey = formData.value.data.some(d => d.key === 'tls.key' && d.value)
+    if (!hasCrt || !hasKey) {
+      ElMessage.error('TLS Secret 必须包含 tls.crt（证书）和 tls.key（私钥）')
+      return
+    }
+  }
+
   saving.value = true
   try {
     const token = localStorage.getItem('token')
@@ -767,10 +789,41 @@ const handleFileChange = (event: Event) => {
           return String.fromCharCode(parseInt(p1, 16))
         })
         const base64Content = btoa(utf8Bytes)
-        // 使用文件名作为 key (去掉扩展名)
-        const fileName = file.name.replace(/\.[^/.]+$/, '')
-        formData.value.data.push({ key: fileName, value: base64Content })
-        ElMessage.success('文件上传成功')
+
+        // 确定 key 名称
+        let keyName = file.name.replace(/\.[^/.]+$/, '') // 默认去掉扩展名
+
+        // 如果是 TLS 类型的 Secret，根据文件扩展名自动设置正确的 key
+        if (formData.value.type === 'kubernetes.io/tls') {
+          const ext = file.name.toLowerCase()
+          if (ext.endsWith('.crt') || ext.endsWith('.pem') || ext.endsWith('.cert')) {
+            // 证书文件 -> tls.crt
+            keyName = 'tls.crt'
+            // 检查是否已存在 tls.crt，如果存在则替换
+            const existingCrtIndex = formData.value.data.findIndex(d => d.key === 'tls.crt')
+            if (existingCrtIndex !== -1) {
+              formData.value.data[existingCrtIndex].value = base64Content
+              ElMessage.success('证书文件已更新 (tls.crt)')
+              return
+            }
+          } else if (ext.endsWith('.key')) {
+            // 私钥文件 -> tls.key
+            keyName = 'tls.key'
+            // 检查是否已存在 tls.key，如果存在则替换
+            const existingKeyIndex = formData.value.data.findIndex(d => d.key === 'tls.key')
+            if (existingKeyIndex !== -1) {
+              formData.value.data[existingKeyIndex].value = base64Content
+              ElMessage.success('私钥文件已更新 (tls.key)')
+              return
+            }
+          } else {
+            // 无法识别的扩展名，提示用户
+            ElMessage.warning('TLS Secret 需要上传 .crt/.pem 证书文件和 .key 私钥文件')
+          }
+        }
+
+        formData.value.data.push({ key: keyName, value: base64Content })
+        ElMessage.success(`文件上传成功 (${keyName})`)
       } catch (error) {
         ElMessage.error('文件编码失败')
       }

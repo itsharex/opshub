@@ -20,11 +20,19 @@
 package server
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -395,12 +403,12 @@ func (h *Handler) GetStats(c *gin.Context) {
 
 // CheckResult 检查结果
 type CheckResult struct {
-	Status       string      `json:"status"`        // normal, abnormal
-	ResponseTime int         `json:"responseTime"`  // 响应时间(ms)
-	SSLValid     bool        `json:"sslValid"`      // SSL是否有效
-	SSLExpiry    *time.Time  `json:"sslExpiry"`     // SSL过期时间
-	StatusCode   int         `json:"statusCode"`    // HTTP状态码
-	ErrorMessage string      `json:"errorMessage"`  // 错误信息
+	Status       string     `json:"status"`       // normal, abnormal
+	ResponseTime int        `json:"responseTime"` // 响应时间(ms)
+	SSLValid     bool       `json:"sslValid"`     // SSL是否有效
+	SSLExpiry    *time.Time `json:"sslExpiry"`    // SSL过期时间
+	StatusCode   int        `json:"statusCode"`   // HTTP状态码
+	ErrorMessage string     `json:"errorMessage"` // 错误信息
 }
 
 // performCheck 执行域名检查
@@ -915,4 +923,249 @@ func (h *Handler) GetCheckHistory(c *gin.Context) {
 			"pageSize": pageSize,
 		},
 	})
+}
+
+// UploadCertificate 上传证书文件
+// @Summary 上传证书文件
+// @Tags Certificate
+// @Accept multipart/form-data
+// @Produce json
+// @Param name formData string true "证书名称"
+// @Param domain formData string true "域名"
+// @Param certFile formData file true "证书文件(.pem/.crt)"
+// @Param keyFile formData file false "私钥文件(.key)"
+// @Success 200 {object} map[string]interface{}
+// @Router /monitor/certificates/upload [post]
+func (h *Handler) UploadCertificate(c *gin.Context) {
+	name := c.PostForm("name")
+	domain := c.PostForm("domain")
+
+	if name == "" || domain == "" {
+		c.JSON(400, gin.H{
+			"code":    400,
+			"message": "证书名称和域名不能为空",
+		})
+		return
+	}
+
+	// 读取证书文件
+	certFile, err := c.FormFile("certFile")
+	if err != nil {
+		c.JSON(400, gin.H{
+			"code":    400,
+			"message": "请上传证书文件",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	certContent, err := readUploadedFile(certFile)
+	if err != nil {
+		c.JSON(500, gin.H{
+			"code":    500,
+			"message": "读取证书文件失败",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	// 验证证书格式
+	if !isValidPEM(certContent, "CERTIFICATE") {
+		c.JSON(400, gin.H{
+			"code":    400,
+			"message": "无效的证书文件格式，请确保是PEM格式",
+		})
+		return
+	}
+
+	var keyContent string
+
+	// 如果上传了私钥文件
+	keyFile, _ := c.FormFile("keyFile")
+	if keyFile != nil {
+		keyContent, err = readUploadedFile(keyFile)
+		if err != nil {
+			c.JSON(500, gin.H{
+				"code":    500,
+				"message": "读取私钥文件失败",
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		// 验证私钥格式
+		if !isValidPEM(keyContent, "PRIVATE KEY") && !isValidPEM(keyContent, "RSA PRIVATE KEY") {
+			c.JSON(400, gin.H{
+				"code":    400,
+				"message": "无效的私钥文件格式，请确保是PEM格式",
+			})
+			return
+		}
+	}
+
+	// 解析证书获取信息
+	certInfo, err := parseCertificateInfo(certContent)
+	if err != nil {
+		c.JSON(400, gin.H{
+			"code":    400,
+			"message": "解析证书失败，请检查证书格式",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	// 返回证书信息供前端确认
+	c.JSON(200, gin.H{
+		"code":    0,
+		"message": "success",
+		"data": gin.H{
+			"name":          name,
+			"domain":        domain,
+			"certificate":   certContent,
+			"privateKey":    keyContent,
+			"subject":       certInfo["Subject"],
+			"issuer":        certInfo["Issuer"],
+			"notBefore":     certInfo["NotBefore"],
+			"notAfter":      certInfo["NotAfter"],
+			"daysRemaining": certInfo["DaysRemaining"],
+			"fingerprint":   certInfo["Fingerprint"],
+		},
+	})
+}
+
+// ValidateCertificate 验证并解析证书（用于手动粘贴）
+// @Summary 验证证书内容
+// @Tags Certificate
+// @Accept json
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Router /monitor/certificates/validate [post]
+func (h *Handler) ValidateCertificate(c *gin.Context) {
+	var req struct {
+		Name        string `json:"name"`
+		Domain      string `json:"domain"`
+		Certificate string `json:"certificate"`
+		PrivateKey  string `json:"privateKey"`
+	}
+
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 400, "message": "请求格式错误"})
+		return
+	}
+
+	if req.Name == "" || req.Domain == "" || req.Certificate == "" {
+		c.JSON(400, gin.H{"code": 400, "message": "证书名称、域名和证书内容不能为空"})
+		return
+	}
+
+	// 验证证书格式
+	if !isValidPEM(req.Certificate, "CERTIFICATE") {
+		c.JSON(400, gin.H{"code": 400, "message": "无效的证书格式"})
+		return
+	}
+
+	// 验证私钥格式（如果提供）
+	if req.PrivateKey != "" && !isValidPEM(req.PrivateKey, "PRIVATE KEY") && !isValidPEM(req.PrivateKey, "RSA PRIVATE KEY") {
+		c.JSON(400, gin.H{"code": 400, "message": "无效的私钥格式"})
+		return
+	}
+
+	// 解析证书信息
+	certInfo, err := parseCertificateInfo(req.Certificate)
+	if err != nil {
+		c.JSON(400, gin.H{"code": 400, "message": "解析证书失败", "error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"code":    0,
+		"message": "success",
+		"data": gin.H{
+			"name":          req.Name,
+			"domain":        req.Domain,
+			"certificate":   req.Certificate,
+			"privateKey":    req.PrivateKey,
+			"subject":       certInfo["Subject"],
+			"issuer":        certInfo["Issuer"],
+			"notBefore":     certInfo["NotBefore"],
+			"notAfter":      certInfo["NotAfter"],
+			"daysRemaining": certInfo["DaysRemaining"],
+			"fingerprint":   certInfo["Fingerprint"],
+		},
+	})
+}
+
+// 辅助函数：读取上传的文件
+func readUploadedFile(fileHeader *multipart.FileHeader) (string, error) {
+	file, err := fileHeader.Open()
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	// 限制文件大小为 10MB
+	if fileHeader.Size > 10*1024*1024 {
+		return "", errors.New("文件大小超过 10MB")
+	}
+
+	content, err := io.ReadAll(file)
+	if err != nil {
+		return "", err
+	}
+
+	return string(content), nil
+}
+
+// 辅助函数：验证 PEM 格式
+func isValidPEM(content string, certType string) bool {
+	if content == "" {
+		return false
+	}
+
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	if len(lines) < 2 {
+		return false
+	}
+
+	// 检查 PEM 头部
+	if !strings.Contains(lines[0], "-----BEGIN") {
+		return false
+	}
+
+	// 检查 PEM 尾部
+	if !strings.Contains(lines[len(lines)-1], "-----END") {
+		return false
+	}
+
+	// 检查证书类型
+	if !strings.Contains(lines[0], certType) {
+		return false
+	}
+
+	return true
+}
+
+// 辅助函数：解析证书信息
+func parseCertificateInfo(certPEM string) (map[string]interface{}, error) {
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil {
+		return nil, errors.New("无法解析PEM块")
+	}
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+
+	daysRemaining := int(cert.NotAfter.Sub(time.Now()).Hours() / 24)
+	fingerprint := hex.EncodeToString(sha256.New().Sum(block.Bytes))
+
+	return map[string]interface{}{
+		"Subject":       cert.Subject.String(),
+		"Issuer":        cert.Issuer.String(),
+		"NotBefore":     cert.NotBefore.Format("2006-01-02 15:04:05"),
+		"NotAfter":      cert.NotAfter.Format("2006-01-02 15:04:05"),
+		"DaysRemaining": daysRemaining,
+		"Fingerprint":   fingerprint,
+	}, nil
 }

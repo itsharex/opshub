@@ -689,6 +689,103 @@ CREATE TABLE IF NOT EXISTS `alert_logs` (
 ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================
+-- 12. SSL证书管理插件
+-- ============================================================
+
+-- SSL证书表
+CREATE TABLE IF NOT EXISTS `ssl_certificates` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted_at` datetime DEFAULT NULL,
+  `name` varchar(100) NOT NULL COMMENT '证书名称',
+  `domain` varchar(255) NOT NULL COMMENT '主域名',
+  `san_domains` text COMMENT 'SAN域名(JSON数组)',
+  `acme_email` varchar(255) COMMENT 'ACME注册邮箱',
+  `ca_provider` varchar(20) COMMENT 'CA提供商: letsencrypt/zerossl/google/buypass',
+  `key_algorithm` varchar(20) COMMENT '密钥算法: rsa2048/rsa3072/rsa4096/ec256/ec384',
+  `source_type` varchar(20) COMMENT '证书来源: acme/aliyun/manual',
+  `cloud_account_id` bigint unsigned DEFAULT NULL COMMENT '云账号ID',
+  `cloud_cert_id` varchar(100) COMMENT '云厂商证书ID',
+  `certificate` text COMMENT '证书PEM',
+  `private_key` text COMMENT '私钥PEM(加密)',
+  `cert_chain` text COMMENT '证书链',
+  `issuer` varchar(255) COMMENT '签发机构',
+  `not_before` datetime COMMENT '生效时间',
+  `not_after` datetime COMMENT '过期时间',
+  `fingerprint` varchar(100) COMMENT '指纹',
+  `status` varchar(20) DEFAULT 'pending' COMMENT '状态: pending/active/expiring/expired/error',
+  `auto_renew` tinyint(1) DEFAULT 1 COMMENT '自动续期',
+  `renew_days_before` int DEFAULT 30 COMMENT '提前续期天数',
+  `dns_provider_id` bigint unsigned DEFAULT NULL COMMENT 'DNS服务商ID',
+  `last_renew_at` datetime COMMENT '最后续期时间',
+  `last_error` text COMMENT '最后错误信息',
+  PRIMARY KEY (`id`),
+  KEY `idx_ssl_certificates_deleted_at` (`deleted_at`),
+  KEY `idx_ssl_certificates_domain` (`domain`),
+  KEY `idx_ssl_certificates_not_after` (`not_after`),
+  KEY `idx_ssl_certificates_cloud_account_id` (`cloud_account_id`),
+  KEY `idx_ssl_certificates_dns_provider_id` (`dns_provider_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- SSL DNS服务商配置表
+CREATE TABLE IF NOT EXISTS `ssl_dns_providers` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted_at` datetime DEFAULT NULL,
+  `name` varchar(100) NOT NULL COMMENT '名称',
+  `provider` varchar(50) NOT NULL COMMENT 'DNS服务商类型: aliyun/cloudflare/huawei/aws_route53',
+  `config` text NOT NULL COMMENT '配置JSON(加密)',
+  `email` varchar(255) COMMENT '联系邮箱',
+  `phone` varchar(50) COMMENT '联系电话',
+  `enabled` tinyint(1) DEFAULT 1 COMMENT '是否启用',
+  `last_test_at` datetime COMMENT '最后测试时间',
+  `last_test_ok` tinyint(1) DEFAULT 0 COMMENT '最后测试结果',
+  PRIMARY KEY (`id`),
+  KEY `idx_ssl_dns_providers_deleted_at` (`deleted_at`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- SSL部署配置表
+CREATE TABLE IF NOT EXISTS `ssl_deploy_configs` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted_at` datetime DEFAULT NULL,
+  `certificate_id` bigint unsigned NOT NULL COMMENT '关联证书ID',
+  `name` varchar(100) NOT NULL COMMENT '配置名称',
+  `deploy_type` varchar(20) NOT NULL COMMENT '部署类型: nginx_ssh/k8s_secret',
+  `target_config` text NOT NULL COMMENT '目标配置JSON',
+  `auto_deploy` tinyint(1) DEFAULT 1 COMMENT '续期后自动部署',
+  `enabled` tinyint(1) DEFAULT 1 COMMENT '是否启用',
+  `last_deploy_at` datetime COMMENT '最后部署时间',
+  `last_deploy_ok` tinyint(1) DEFAULT 0 COMMENT '最后部署结果',
+  `last_error` text COMMENT '最后错误信息',
+  PRIMARY KEY (`id`),
+  KEY `idx_ssl_deploy_configs_deleted_at` (`deleted_at`),
+  KEY `idx_ssl_deploy_configs_certificate_id` (`certificate_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- SSL续期任务表
+CREATE TABLE IF NOT EXISTS `ssl_renew_tasks` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted_at` datetime DEFAULT NULL,
+  `certificate_id` bigint unsigned NOT NULL COMMENT '关联证书ID',
+  `task_type` varchar(20) NOT NULL COMMENT '任务类型: issue/renew/deploy',
+  `status` varchar(20) DEFAULT 'pending' COMMENT '状态: pending/running/success/failed',
+  `trigger_type` varchar(20) NOT NULL COMMENT '触发类型: auto/manual',
+  `started_at` datetime COMMENT '开始时间',
+  `finished_at` datetime COMMENT '完成时间',
+  `error_message` text COMMENT '错误信息',
+  `result` text COMMENT '结果JSON',
+  PRIMARY KEY (`id`),
+  KEY `idx_ssl_renew_tasks_deleted_at` (`deleted_at`),
+  KEY `idx_ssl_renew_tasks_certificate_id` (`certificate_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================
 -- 初始化数据
 -- ============================================================
 
@@ -798,7 +895,8 @@ INSERT INTO `plugin_states` (`name`, `enabled`, `created_at`, `updated_at`)
 VALUES
   ('kubernetes', 1, NOW(), NOW()),
   ('monitor', 1, NOW(), NOW()),
-  ('task', 1, NOW(), NOW());
+  ('task', 1, NOW(), NOW()),
+  ('ssl-cert', 1, NOW(), NOW());
 
 SET FOREIGN_KEY_CHECKS = 1;
 

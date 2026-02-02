@@ -39,10 +39,11 @@ import (
 	"github.com/ydcloud-dy/opshub/pkg/middleware"
 	k8splugin "github.com/ydcloud-dy/opshub/plugins/kubernetes"
 	monitorplugin "github.com/ydcloud-dy/opshub/plugins/monitor"
+	sslcertplugin "github.com/ydcloud-dy/opshub/plugins/ssl-cert"
 	taskplugin "github.com/ydcloud-dy/opshub/plugins/task"
+	testplugin "github.com/ydcloud-dy/opshub/plugins/test"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
-	testplugin "github.com/ydcloud-dy/opshub/plugins/test"
 )
 
 // HTTPServer HTTP服务器
@@ -95,6 +96,11 @@ func NewHTTPServer(conf *conf.Config, svc *service.Service, db *gorm.DB) *HTTPSe
 	// 注册 test 插件
 	if err := pluginMgr.Register(testplugin.New()); err != nil {
 		appLogger.Error("注册test插件失败", zap.Error(err))
+	}
+
+	// 注册 ssl-cert 插件
+	if err := pluginMgr.Register(sslcertplugin.New()); err != nil {
+		appLogger.Error("注册ssl-cert插件失败", zap.Error(err))
 	}
 
 	// 注册路由

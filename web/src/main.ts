@@ -13,6 +13,7 @@ import '@/plugins/kubernetes'
 import '@/plugins/monitor'
 import '@/plugins/task'
 import '@/plugins/test'
+import '@/plugins/ssl-cert'
 const app = createApp(App)
 const pinia = createPinia()
 

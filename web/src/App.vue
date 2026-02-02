@@ -23,10 +23,44 @@ body,
 /* 全局字体大小增加 */
 html {
   font-size: 20px; /* 增加到20px */
+  overflow-y: scroll; /* 始终显示滚动条，防止弹窗打开时页面抖动 */
 }
 
 body {
   font-size: 1rem; /* 20px */
+}
+
+/* 修复 Element Plus Dialog 打开时页面抖动 */
+body.el-popup-parent--hidden {
+  padding-right: 0 !important;
+  overflow: hidden !important;
+  width: 100% !important;
+}
+
+/* 隐藏弹窗遮罩层的滚动条 */
+.el-overlay {
+  overflow: hidden !important;
+  scrollbar-width: none !important; /* Firefox */
+  -ms-overflow-style: none !important; /* IE/Edge */
+}
+
+.el-overlay::-webkit-scrollbar {
+  display: none !important; /* Chrome/Safari/Opera */
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* 弹窗wrapper也隐藏滚动条 */
+.el-overlay-dialog {
+  overflow: hidden !important;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+.el-overlay-dialog::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 
 /* 调整Element Plus组件字体大小 */
