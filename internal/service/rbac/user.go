@@ -28,6 +28,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/ydcloud-dy/opshub/internal/biz/audit"
+	mfabiz "github.com/ydcloud-dy/opshub/internal/biz/mfa"
 	"github.com/ydcloud-dy/opshub/internal/biz/rbac"
 	"github.com/ydcloud-dy/opshub/internal/biz/system"
 	appLogger "github.com/ydcloud-dy/opshub/pkg/logger"
@@ -41,6 +42,8 @@ type UserService struct {
 	captchaService  *CaptchaService
 	loginLogUseCase *audit.LoginLogUseCase
 	configUseCase   *system.ConfigUseCase
+	ldapAuthService *LDAPAuthService
+	mfaUseCase      *mfabiz.UseCase
 }
 
 func NewUserService(userUseCase *rbac.UserUseCase, authService *AuthService) *UserService {
@@ -65,6 +68,26 @@ func (s *UserService) SetConfigUseCase(configUseCase *system.ConfigUseCase) {
 	s.configUseCase = configUseCase
 }
 
+// SetLDAPAuthService 设置LDAP认证服务（通过依赖注入）
+func (s *UserService) SetLDAPAuthService(ldapAuthService *LDAPAuthService) {
+	s.ldapAuthService = ldapAuthService
+}
+
+// SetMFAUseCase 设置MFA用例（通过依赖注入）
+func (s *UserService) SetMFAUseCase(mfaUseCase *mfabiz.UseCase) {
+	s.mfaUseCase = mfaUseCase
+}
+
+// GetUserUseCase 获取用户用例（供外部依赖注入使用）
+func (s *UserService) GetUserUseCase() *rbac.UserUseCase {
+	return s.userUseCase
+}
+
+// GetAuthService 获取认证服务（供OAuth等模块使用）
+func (s *UserService) GetAuthService() *AuthService {
+	return s.authService
+}
+
 // LoginRequest 登录请求
 type LoginRequest struct {
 	Username    string `json:"username" binding:"required"`
@@ -76,8 +99,11 @@ type LoginRequest struct {
 
 // LoginResponse 登录响应
 type LoginResponse struct {
-	Token string        `json:"token"`
-	User  *rbac.SysUser `json:"user"`
+	Token        string        `json:"token,omitempty"`
+	User         *rbac.SysUser `json:"user,omitempty"`
+	RequireMFA   bool          `json:"requireMfa"`         // 是否需要MFA验证
+	MFAToken     string        `json:"mfaToken,omitempty"` // MFA临时token
+	RequireSetup bool          `json:"requireSetup"`       // 是否需要强制设置MFA
 }
 
 // RegisterRequest 注册请求
@@ -167,22 +193,41 @@ func (s *UserService) Login(c *gin.Context) {
 
 	user, err := s.userUseCase.ValidatePassword(c.Request.Context(), req.Username, req.Password)
 	if err != nil {
-		appLogger.Error("登录失败", zap.String("username", req.Username), zap.Error(err))
-		// 记录登录日志 - 用户名或密码错误
-		s.recordLoginLog(req.Username, "web", "failed", clientIP, userAgent, err.Error(), 0)
-		// 记录登录失败次数
-		if s.configUseCase != nil {
-			appLogger.Info("记录登录失败次数", zap.String("username", req.Username))
-			if recordErr := s.configUseCase.RecordLoginFailure(c.Request.Context(), req.Username); recordErr != nil {
-				appLogger.Error("记录登录失败次数失败", zap.Error(recordErr))
+		// 本地认证失败，尝试LDAP认证
+		if s.ldapAuthService != nil && s.ldapAuthService.IsEnabled(c.Request.Context()) {
+			appLogger.Info("本地认证失败，尝试LDAP认证", zap.String("username", req.Username))
+			ldapUser, ldapErr := s.ldapAuthService.Authenticate(c.Request.Context(), req.Username, req.Password)
+			if ldapErr == nil && ldapUser != nil {
+				// LDAP认证成功
+				appLogger.Info("LDAP认证成功", zap.String("username", req.Username))
+				user = ldapUser
+				err = nil
+				// 记录登录日志 - LDAP登录成功
+				s.recordLoginLog(req.Username, "ldap", "success", clientIP, userAgent, "", ldapUser.ID)
 			} else {
-				appLogger.Info("登录失败次数记录成功", zap.String("username", req.Username))
+				appLogger.Info("LDAP认证也失败", zap.String("username", req.Username), zap.Error(ldapErr))
 			}
-		} else {
-			appLogger.Warn("configUseCase未设置，无法记录登录失败次数")
 		}
-		response.ErrorCode(c, http.StatusOK, err.Error())
-		return
+
+		// 本地和LDAP都认证失败
+		if err != nil {
+			appLogger.Error("登录失败", zap.String("username", req.Username), zap.Error(err))
+			// 记录登录日志 - 用户名或密码错误
+			s.recordLoginLog(req.Username, "web", "failed", clientIP, userAgent, err.Error(), 0)
+			// 记录登录失败次数
+			if s.configUseCase != nil {
+				appLogger.Info("记录登录失败次数", zap.String("username", req.Username))
+				if recordErr := s.configUseCase.RecordLoginFailure(c.Request.Context(), req.Username); recordErr != nil {
+					appLogger.Error("记录登录失败次数失败", zap.Error(recordErr))
+				} else {
+					appLogger.Info("登录失败次数记录成功", zap.String("username", req.Username))
+				}
+			} else {
+				appLogger.Warn("configUseCase未设置，无法记录登录失败次数")
+			}
+			response.ErrorCode(c, http.StatusOK, err.Error())
+			return
+		}
 	}
 
 	if user.Status != 1 {
@@ -190,6 +235,53 @@ func (s *UserService) Login(c *gin.Context) {
 		s.recordLoginLog(req.Username, "web", "failed", clientIP, userAgent, "用户已被禁用", user.ID)
 		response.ErrorCode(c, http.StatusOK, "用户已被禁用")
 		return
+	}
+
+	// 检查是否启用了MFA
+	// 先检查系统是否启用了MFA功能
+	systemMFAEnabled := false
+	mfaEnforced := false
+	if s.configUseCase != nil {
+		securityConfig, err := s.configUseCase.GetSecurityConfig(c.Request.Context())
+		if err == nil {
+			systemMFAEnabled = securityConfig.MFAEnabled
+			mfaEnforced = securityConfig.MFAEnforced
+		}
+	}
+
+	// 检查用户是否已启用MFA
+	userMFAEnabled := false
+	if s.mfaUseCase != nil {
+		userMFAEnabled = s.mfaUseCase.IsMFAEnabled(c.Request.Context(), user.ID)
+	}
+
+	// MFA验证逻辑：
+	// 1. 如果用户已启用MFA，则需要验证（但检查是否为信任设备）
+	// 2. 如果开启了强制MFA但用户未设置，允许登录但需要前端强制引导设置
+	if systemMFAEnabled && s.mfaUseCase != nil {
+		if userMFAEnabled {
+			// 检查是否为信任设备（通过cookie）
+			deviceToken, _ := c.Cookie("mfa_trusted_device")
+			if deviceToken != "" && s.mfaUseCase.IsTrustedDevice(c.Request.Context(), user.ID, deviceToken) {
+				// 信任设备，跳过MFA验证
+				appLogger.Info("MFA信任设备，跳过验证", zap.String("username", req.Username))
+			} else {
+				// 用户已启用MFA，需要验证
+				// 生成临时MFA token（5分钟有效）
+				mfaToken, err := s.authService.GenerateMFAToken(user.ID, user.Username)
+				if err != nil {
+					response.ErrorCode(c, http.StatusInternalServerError, "生成MFA token失败")
+					return
+				}
+				// 返回需要MFA验证的响应
+				response.Success(c, LoginResponse{
+					RequireMFA: true,
+					MFAToken:   mfaToken,
+					User:       nil,
+				})
+				return
+			}
+		}
 	}
 
 	token, err := s.authService.GenerateToken(user.ID, user.Username)
@@ -231,8 +323,9 @@ func (s *UserService) Login(c *gin.Context) {
 	)
 
 	response.Success(c, LoginResponse{
-		Token: token,
-		User:  user,
+		Token:        token,
+		User:         user,
+		RequireSetup: mfaEnforced && !userMFAEnabled, // 如果强制MFA但用户未设置，需要引导设置
 	})
 }
 
@@ -742,4 +835,122 @@ func (s *UserService) UnlockUser(c *gin.Context) {
 	}
 
 	response.SuccessWithMessage(c, "用户已解锁", nil)
+}
+
+// MFALoginRequest MFA登录请求
+type MFALoginRequest struct {
+	MFAToken       string `json:"mfaToken" binding:"required"`
+	Code           string `json:"code" binding:"required"`
+	RememberDevice bool   `json:"rememberDevice"`
+}
+
+// MFALogin MFA登录验证
+// @Summary MFA登录验证
+// @Description 使用MFA验证码完成登录
+// @Tags 认证管理
+// @Accept json
+// @Produce json
+// @Param body body MFALoginRequest true "MFA登录信息"
+// @Success 200 {object} response.Response{data=LoginResponse} "登录成功"
+// @Failure 400 {object} response.Response "参数错误"
+// @Router /api/v1/public/auth/mfa/login [post]
+func (s *UserService) MFALogin(c *gin.Context) {
+	var req MFALoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ErrorCode(c, http.StatusBadRequest, "参数错误: "+err.Error())
+		return
+	}
+
+	// 解析MFA Token
+	mfaClaims, err := s.authService.ParseMFAToken(req.MFAToken)
+	if err != nil {
+		response.ErrorCode(c, http.StatusUnauthorized, "MFA token无效或已过期")
+		return
+	}
+
+	// 获取客户端信息
+	clientIP := c.ClientIP()
+	userAgent := c.Request.UserAgent()
+
+	// 验证MFA码
+	if s.mfaUseCase == nil {
+		response.ErrorCode(c, http.StatusInternalServerError, "MFA服务未初始化")
+		return
+	}
+
+	valid, err := s.mfaUseCase.ValidateMFACode(c.Request.Context(), mfaClaims.UserID, req.Code, clientIP, userAgent)
+	if err != nil || !valid {
+		s.recordLoginLog(mfaClaims.Username, "mfa", "failed", clientIP, userAgent, "MFA验证码错误", mfaClaims.UserID)
+		response.ErrorCode(c, http.StatusOK, "验证码错误")
+		return
+	}
+
+	// MFA验证成功，生成正式token
+	token, err := s.authService.GenerateToken(mfaClaims.UserID, mfaClaims.Username)
+	if err != nil {
+		response.ErrorCode(c, http.StatusInternalServerError, "生成token失败")
+		return
+	}
+
+	// 获取用户信息
+	user, err := s.userUseCase.GetByID(c.Request.Context(), mfaClaims.UserID)
+	if err != nil {
+		response.ErrorCode(c, http.StatusNotFound, "用户不存在")
+		return
+	}
+
+	// 登录成功，重置登录失败次数
+	if s.configUseCase != nil {
+		if resetErr := s.configUseCase.ResetLoginAttempt(c.Request.Context(), mfaClaims.Username); resetErr != nil {
+			appLogger.Error("重置登录失败次数失败", zap.Error(resetErr))
+		}
+	}
+
+	// 清空密码字段
+	user.Password = ""
+
+	// 更新最后登录时间
+	_ = s.userUseCase.Update(c.Request.Context(), user)
+
+	// 记录登录日志
+	s.recordLoginLog(mfaClaims.Username, "mfa", "success", clientIP, userAgent, "", user.ID)
+
+	appLogger.Info("MFA登录成功", zap.String("username", mfaClaims.Username))
+
+	// 设置 session cookie
+	c.SetCookie(
+		"opshub_session",
+		token,
+		86400,
+		"/",
+		"",
+		false,
+		true,
+	)
+
+	// 如果选择记住设备，保存信任设备并设置cookie
+	if req.RememberDevice && s.configUseCase != nil && s.mfaUseCase != nil {
+		securityConfig, err := s.configUseCase.GetSecurityConfig(c.Request.Context())
+		if err == nil && securityConfig.MFASkipDuration > 0 {
+			deviceToken, err := s.mfaUseCase.SaveTrustedDevice(c.Request.Context(), mfaClaims.UserID, userAgent, clientIP, securityConfig.MFASkipDuration)
+			if err != nil {
+				appLogger.Error("保存MFA信任设备失败", zap.Error(err))
+			} else {
+				c.SetCookie(
+					"mfa_trusted_device",
+					deviceToken,
+					securityConfig.MFASkipDuration,
+					"/",
+					"",
+					false,
+					true,
+				)
+			}
+		}
+	}
+
+	response.Success(c, LoginResponse{
+		Token: token,
+		User:  user,
+	})
 }

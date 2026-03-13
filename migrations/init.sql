@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS `sys_user` (
   `phone` varchar(20) COMMENT '手机号',
   `avatar` varchar(255) COMMENT '头像',
   `status` tinyint DEFAULT 1 COMMENT '状态 1:启用 0:禁用',
+  `source` varchar(20) DEFAULT 'local' COMMENT '用户来源 local:本地 ldap:LDAP',
   `department_id` bigint unsigned DEFAULT 0 COMMENT '部门ID',
   `bio` text COMMENT '个人简介',
   `last_login_at` datetime COMMENT '最后登录时间',
@@ -1027,6 +1028,38 @@ CREATE TABLE IF NOT EXISTS `mfa_settings` (
   UNIQUE KEY `uk_user_id` (`user_id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- MFA日志表
+CREATE TABLE IF NOT EXISTS `sys_mfa_log` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint unsigned NOT NULL COMMENT '用户ID',
+  `mfa_type` varchar(20) COMMENT 'MFA类型',
+  `action` varchar(20) NOT NULL COMMENT '操作(verify/enable/disable/setup)',
+  `ip_address` varchar(45) COMMENT 'IP地址',
+  `user_agent` varchar(500) COMMENT '用户代理',
+  `success` tinyint(1) DEFAULT 0 COMMENT '是否成功',
+  `message` varchar(255) COMMENT '消息',
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_user_id` (`user_id`),
+  KEY `idx_created_at` (`created_at`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- MFA信任设备表
+CREATE TABLE IF NOT EXISTS `mfa_trusted_devices` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint unsigned NOT NULL COMMENT '用户ID',
+  `device_token` varchar(255) NOT NULL COMMENT '设备令牌(哈希存储)',
+  `device_name` varchar(255) COMMENT '设备名称(User-Agent)',
+  `ip_address` varchar(45) COMMENT 'IP地址',
+  `last_verified_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '最后验证时间',
+  `expires_at` datetime NOT NULL COMMENT '过期时间',
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_device_token` (`device_token`),
+  KEY `idx_user_id` (`user_id`),
+  KEY `idx_expires_at` (`expires_at`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- MFA挑战表
 CREATE TABLE IF NOT EXISTS `mfa_challenges` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
@@ -1350,7 +1383,7 @@ VALUES
   -- ========== 顶级菜单 ==========
   (10, '仪表盘', 'dashboard', 1, 0, '/dashboard', '', 'HomeFilled', 0, 1, 1, NOW(), NOW()),
   (15, '资产管理', 'asset-management', 1, 0, '/asset', '', 'Coin', 1, 1, 1, NOW(), NOW()),
-  (90, '身份认证', 'identity', 1, 0, '/identity', '', 'Key', 2, 1, 1, NOW(), NOW()),
+  -- (90, '身份认证', 'identity', 1, 0, '/identity', '', 'Key', 2, 1, 1, NOW(), NOW()),  -- 身份认证模块暂不开放
   (23, '操作审计', 'audit', 1, 0, '/audit', '', 'Document', 50, 1, 1, NOW(), NOW()),
   (30, '插件管理', 'plugin', 1, 0, '/plugin', '', 'Grid', 80, 1, 1, NOW(), NOW()),
   (1, '系统管理', 'system', 1, 0, '', '', 'Setting', 100, 1, 1, NOW(), NOW()),
@@ -1364,13 +1397,13 @@ VALUES
   (12, '岗位信息', 'position-info', 2, 1, '/position-info', 'system/PositionInfo', 'Avatar', 6, 1, 1, NOW(), NOW()),
   (13, '系统配置', 'system-config', 2, 1, '/system-config', 'system/SystemConfig', 'Setting', 7, 1, 1, NOW(), NOW()),
 
-  -- ========== 身份认证子菜单 (parent_id=90) ==========
-  (91, '身份源管理', 'identity_sources', 2, 90, '/identity/sources', 'identity/IdentitySources', 'User', 1, 1, 1, NOW(), NOW()),
-  (92, '应用管理', 'identity_apps', 2, 90, '/identity/apps', 'identity/SSOApplications', 'Grid', 2, 1, 1, NOW(), NOW()),
-  (93, '凭证管理', 'identity_credentials', 2, 90, '/identity/credentials', 'identity/Credentials', 'Lock', 3, 1, 1, NOW(), NOW()),
-  (94, '访问策略', 'identity_permissions', 2, 90, '/identity/permissions', 'identity/Permissions', 'Key', 4, 1, 1, NOW(), NOW()),
-  (95, '认证日志', 'identity_logs', 2, 90, '/identity/logs', 'identity/AuthLogs', 'Document', 5, 1, 1, NOW(), NOW()),
-  (96, '应用门户', 'identity_portal', 2, 90, '/identity/portal', 'identity/Portal', 'Menu', 6, 1, 1, NOW(), NOW()),
+  -- ========== 身份认证子菜单 (parent_id=90) - 身份认证模块暂不开放 ==========
+  -- (91, '身份源管理', 'identity_sources', 2, 90, '/identity/sources', 'identity/IdentitySources', 'User', 1, 1, 1, NOW(), NOW()),
+  -- (92, '应用管理', 'identity_apps', 2, 90, '/identity/apps', 'identity/SSOApplications', 'Grid', 2, 1, 1, NOW(), NOW()),
+  -- (93, '凭证管理', 'identity_credentials', 2, 90, '/identity/credentials', 'identity/Credentials', 'Lock', 3, 1, 1, NOW(), NOW()),
+  -- (94, '访问策略', 'identity_permissions', 2, 90, '/identity/permissions', 'identity/Permissions', 'Key', 4, 1, 1, NOW(), NOW()),
+  -- (95, '认证日志', 'identity_logs', 2, 90, '/identity/logs', 'identity/AuthLogs', 'Document', 5, 1, 1, NOW(), NOW()),
+  -- (96, '应用门户', 'identity_portal', 2, 90, '/identity/portal', 'identity/Portal', 'Menu', 6, 1, 1, NOW(), NOW()),
 
   -- ========== 资产管理子菜单 (parent_id=15) ==========
   (16, '主机管理', 'host-management', 2, 15, '/asset/hosts', 'asset/Hosts', 'Monitor', 1, 1, 1, NOW(), NOW()),
@@ -1392,15 +1425,17 @@ VALUES
 INSERT INTO `sys_role_menu` (`role_id`, `menu_id`)
 VALUES
   (1, 1), (1, 2), (1, 3), (1, 5), (1, 10), (1, 11), (1, 12), (1, 13), (1, 15), (1, 16), (1, 17), (1, 19),
-  (1, 23), (1, 24), (1, 25), (1, 27), (1, 29), (1, 30), (1, 32), (1, 33), (1, 34), (1, 65),
-  (1, 90), (1, 91), (1, 92), (1, 93), (1, 94), (1, 95), (1, 96);
+  (1, 23), (1, 24), (1, 25), (1, 27), (1, 29), (1, 30), (1, 32), (1, 33), (1, 34), (1, 65);
+  -- 身份认证模块暂不开放，如需启用请取消注释并改为逗号连接
+  -- (1, 90), (1, 91), (1, 92), (1, 93), (1, 94), (1, 95), (1, 96);
 
 -- 为普通用户角色分配基础菜单权限
 INSERT INTO `sys_role_menu` (`role_id`, `menu_id`)
 VALUES
   (2, 10), (2, 15), (2, 16), (2, 17), (2, 19), (2, 27), (2, 34), (2, 65),
-  (2, 23), (2, 24), (2, 25),
-  (2, 90), (2, 92), (2, 93), (2, 96);
+  (2, 23), (2, 24), (2, 25);
+  -- 身份认证模块暂不开放
+  -- (2, 90), (2, 92), (2, 93), (2, 96);
 
 -- ============================================================
 -- 11. 插件状态表
@@ -1438,7 +1473,12 @@ VALUES
   ('session_timeout', '3600', 'int', 'security', 'Session超时时间(秒)', NOW(), NOW()),
   ('enable_captcha', 'true', 'bool', 'security', '是否开启验证码', NOW(), NOW()),
   ('max_login_attempts', '5', 'int', 'security', '最大登录失败次数', NOW(), NOW()),
-  ('lockout_duration', '300', 'int', 'security', '账户锁定时间(秒)', NOW(), NOW());
+  ('lockout_duration', '300', 'int', 'security', '账户锁定时间(秒)', NOW(), NOW()),
+  -- MFA配置
+  ('mfa_enabled', 'false', 'bool', 'security', '是否启用MFA功能', NOW(), NOW()),
+  ('mfa_enforced', 'false', 'bool', 'security', '是否强制所有用户启用MFA', NOW(), NOW()),
+  ('mfa_type', 'totp', 'string', 'security', 'MFA类型(totp)', NOW(), NOW()),
+  ('mfa_skip_duration', '2592000', 'int', 'security', 'MFA记住设备时长(秒)', NOW(), NOW());
 
 SET FOREIGN_KEY_CHECKS = 1;
 

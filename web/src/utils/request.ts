@@ -3,7 +3,8 @@ import { ElMessage } from 'element-plus'
 
 const request = axios.create({
   baseURL: '/',
-  timeout: 60000 // 60秒超时
+  timeout: 60000, // 60秒超时
+  withCredentials: true // 携带cookie（用于MFA信任设备等）
 })
 
 // Token过期跳转标志，防止重复跳转
@@ -41,8 +42,8 @@ request.interceptors.response.use(
     if (res.code !== 0 && res.code !== 200) {
       const url = response.config.url || ''
 
-      // 检查是否是Token过期错误
-      if (res.message && (
+      // 检查是否是Token过期错误（排除MFA相关接口，MFA token错误不应触发登出）
+      if (res.message && !url.includes('/auth/mfa') && (
         res.message.includes('Token无效') ||
         res.message.includes('Token已过期') ||
         res.message.includes('token无效') ||
@@ -55,6 +56,7 @@ request.interceptors.response.use(
           isRedirecting = true
           ElMessage.error('登录已过期，请重新登录')
           localStorage.removeItem('token')
+          localStorage.removeItem('mfa_setup_required')
           // 延迟跳转，让用户看到提示
           setTimeout(() => {
             window.location.href = '/login'
@@ -69,7 +71,7 @@ request.interceptors.response.use(
 
       // 只在非登录接口的情况下自动显示错误消息
       // 登录接口和验证码接口的错误由调用方处理,避免重复提示
-      if (!url.includes('/login') && !url.includes('/captcha')) {
+      if (!url.includes('/login') && !url.includes('/captcha') && !url.includes('/auth/mfa')) {
         ElMessage.error(res.message || '请求失败')
       }
       // 返回完整的响应对象，让调用方可以访问code和message
@@ -86,10 +88,10 @@ request.interceptors.response.use(
     const status = error.response?.status
     const url = error.config?.url || ''
 
-    // 401 - 未登录，跳转到登录页
+    // 401 - 未登录，跳转到登录页（排除登录和MFA相关接口）
     if (status === 401) {
-      // 只在非登录请求时自动跳转到登录页
-      if (!url.includes('/login') && !isRedirecting) {
+      // 只在非登录、非MFA请求时自动跳转到登录页
+      if (!url.includes('/login') && !url.includes('/auth/mfa') && !isRedirecting) {
         isRedirecting = true
         ElMessage.error('登录已过期，请重新登录')
         localStorage.removeItem('token')

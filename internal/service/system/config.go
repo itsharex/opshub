@@ -20,6 +20,7 @@
 package system
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +30,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-ldap/ldap/v3"
 	"github.com/ydcloud-dy/opshub/internal/biz/system"
 	"github.com/ydcloud-dy/opshub/pkg/response"
 )
@@ -146,6 +148,11 @@ type SaveSecurityConfigRequest struct {
 	EnableCaptcha     bool `json:"enableCaptcha"`
 	MaxLoginAttempts  int  `json:"maxLoginAttempts"`
 	LockoutDuration   int  `json:"lockoutDuration"`
+	// MFA配置
+	MFAEnabled      bool   `json:"mfaEnabled"`
+	MFAEnforced     bool   `json:"mfaEnforced"`
+	MFAType         string `json:"mfaType"`
+	MFASkipDuration int    `json:"mfaSkipDuration"`
 }
 
 // SaveSecurityConfig 保存安全配置
@@ -181,6 +188,11 @@ func (s *ConfigService) SaveSecurityConfig(c *gin.Context) {
 		EnableCaptcha:     req.EnableCaptcha,
 		MaxLoginAttempts:  req.MaxLoginAttempts,
 		LockoutDuration:   req.LockoutDuration,
+		// MFA配置
+		MFAEnabled:      req.MFAEnabled,
+		MFAEnforced:     req.MFAEnforced,
+		MFAType:         req.MFAType,
+		MFASkipDuration: req.MFASkipDuration,
 	}
 
 	if err := s.configUseCase.SaveSecurityConfig(c.Request.Context(), config); err != nil {
@@ -291,15 +303,223 @@ func (s *ConfigService) GetPublicConfig(c *gin.Context) {
 		}
 	}
 
+	// 获取LDAP启用状态
+	ldapEnabled := s.configUseCase.IsLDAPEnabled(c.Request.Context())
+
 	response.Success(c, gin.H{
 		"systemName":        basicConfig.SystemName,
 		"systemLogo":        basicConfig.SystemLogo,
 		"systemDescription": basicConfig.SystemDescription,
 		"enableCaptcha":     securityConfig.EnableCaptcha,
+		"ldapEnabled":       ldapEnabled,
 	})
 }
 
 // GetConfigUseCase 获取配置用例（供其他服务使用）
 func (s *ConfigService) GetConfigUseCase() *system.ConfigUseCase {
 	return s.configUseCase
+}
+
+// GetLDAPConfig 获取LDAP配置
+// @Summary 获取LDAP配置
+// @Description 获取LDAP认证配置
+// @Tags 系统配置
+// @Accept json
+// @Produce json
+// @Security Bearer
+// @Success 200 {object} response.Response{} "获取成功"
+// @Router /api/v1/system/config/ldap [get]
+func (s *ConfigService) GetLDAPConfig(c *gin.Context) {
+	config, err := s.configUseCase.GetLDAPConfig(c.Request.Context())
+	if err != nil {
+		response.ErrorCode(c, http.StatusInternalServerError, "获取LDAP配置失败: "+err.Error())
+		return
+	}
+	// 返回时隐藏密码
+	safeCfg := *config
+	if safeCfg.BindPassword != "" {
+		safeCfg.BindPassword = "******"
+	}
+	response.Success(c, safeCfg)
+}
+
+// SaveLDAPConfig 保存LDAP配置
+// @Summary 保存LDAP配置
+// @Description 保存LDAP认证配置
+// @Tags 系统配置
+// @Accept json
+// @Produce json
+// @Security Bearer
+// @Param body body system.LDAPConfig true "LDAP配置"
+// @Success 200 {object} response.Response "保存成功"
+// @Router /api/v1/system/config/ldap [put]
+func (s *ConfigService) SaveLDAPConfig(c *gin.Context) {
+	var req system.LDAPConfig
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ErrorCode(c, http.StatusBadRequest, "参数错误: "+err.Error())
+		return
+	}
+
+	// 如果密码是掩码，保留原密码
+	if req.BindPassword == "******" {
+		oldCfg, _ := s.configUseCase.GetLDAPConfig(c.Request.Context())
+		if oldCfg != nil {
+			req.BindPassword = oldCfg.BindPassword
+		}
+	}
+
+	// 参数验证
+	if req.Enabled {
+		if req.Host == "" {
+			response.ErrorCode(c, http.StatusBadRequest, "启用LDAP时服务器地址不能为空")
+			return
+		}
+		if req.BindDN == "" {
+			response.ErrorCode(c, http.StatusBadRequest, "启用LDAP时Bind DN不能为空")
+			return
+		}
+		if req.BaseDN == "" {
+			response.ErrorCode(c, http.StatusBadRequest, "启用LDAP时Base DN不能为空")
+			return
+		}
+	}
+
+	// 设置默认值
+	if req.Port == 0 {
+		if req.UseTLS {
+			req.Port = 636
+		} else {
+			req.Port = 389
+		}
+	}
+	if req.UserFilter == "" {
+		req.UserFilter = "(uid=%s)"
+	}
+	if req.AttrUsername == "" {
+		req.AttrUsername = "uid"
+	}
+	if req.AttrEmail == "" {
+		req.AttrEmail = "mail"
+	}
+	if req.AttrRealName == "" {
+		req.AttrRealName = "cn"
+	}
+	if req.AttrPhone == "" {
+		req.AttrPhone = "telephoneNumber"
+	}
+
+	if err := s.configUseCase.SaveLDAPConfig(c.Request.Context(), &req); err != nil {
+		response.ErrorCode(c, http.StatusInternalServerError, "保存LDAP配置失败: "+err.Error())
+		return
+	}
+
+	response.SuccessWithMessage(c, "LDAP配置保存成功", nil)
+}
+
+// TestLDAPConnection 测试LDAP连接
+// @Summary 测试LDAP连接
+// @Description 使用提供的配置测试LDAP服务器连接
+// @Tags 系统配置
+// @Accept json
+// @Produce json
+// @Security Bearer
+// @Param body body system.LDAPConfig true "LDAP配置"
+// @Success 200 {object} response.Response "连接成功"
+// @Router /api/v1/system/config/ldap/test [post]
+func (s *ConfigService) TestLDAPConnection(c *gin.Context) {
+	var req system.LDAPConfig
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ErrorCode(c, http.StatusBadRequest, "参数错误: "+err.Error())
+		return
+	}
+
+	// 如果密码是掩码，使用已保存的密码
+	if req.BindPassword == "******" {
+		oldCfg, _ := s.configUseCase.GetLDAPConfig(c.Request.Context())
+		if oldCfg != nil {
+			req.BindPassword = oldCfg.BindPassword
+		}
+	}
+
+	if req.Host == "" || req.BindDN == "" || req.BaseDN == "" {
+		response.ErrorCode(c, http.StatusBadRequest, "服务器地址、Bind DN、Base DN不能为空")
+		return
+	}
+
+	if req.Port == 0 {
+		if req.UseTLS {
+			req.Port = 636
+		} else {
+			req.Port = 389
+		}
+	}
+
+	// 测试连接
+	address := fmt.Sprintf("%s:%d", req.Host, req.Port)
+	var conn *ldap.Conn
+	var err error
+
+	if req.UseTLS {
+		tlsConfig := &tls.Config{InsecureSkipVerify: req.SkipVerify}
+		conn, err = ldap.DialTLS("tcp", address, tlsConfig)
+	} else {
+		conn, err = ldap.Dial("tcp", address)
+		if err == nil && req.StartTLS {
+			tlsConfig := &tls.Config{InsecureSkipVerify: req.SkipVerify}
+			err = conn.StartTLS(tlsConfig)
+		}
+	}
+
+	if err != nil {
+		response.ErrorCode(c, http.StatusBadRequest, "连接LDAP服务器失败: "+err.Error())
+		return
+	}
+	defer conn.Close()
+
+	// 测试绑定
+	if err := conn.Bind(req.BindDN, req.BindPassword); err != nil {
+		response.ErrorCode(c, http.StatusBadRequest, "LDAP绑定失败（请检查Bind DN和密码）: "+err.Error())
+		return
+	}
+
+	// 测试搜索BaseDN
+	searchReq := ldap.NewSearchRequest(
+		req.BaseDN,
+		ldap.ScopeBaseObject,
+		ldap.NeverDerefAliases,
+		1, 10, false,
+		"(objectClass=*)",
+		[]string{"dn"},
+		nil,
+	)
+	if _, err := conn.Search(searchReq); err != nil {
+		response.ErrorCode(c, http.StatusBadRequest, "Base DN搜索失败（请检查Base DN是否正确）: "+err.Error())
+		return
+	}
+
+	// 统计用户数
+	userFilter := req.UserFilter
+	if userFilter == "" {
+		userFilter = "(uid=%s)"
+	}
+	userFilter = strings.Replace(userFilter, "%s", "*", -1)
+	userSearchReq := ldap.NewSearchRequest(
+		req.BaseDN,
+		ldap.ScopeWholeSubtree,
+		ldap.NeverDerefAliases,
+		0, 10, false,
+		userFilter,
+		[]string{"dn"},
+		nil,
+	)
+	userResult, err := conn.Search(userSearchReq)
+	userCount := 0
+	if err == nil {
+		userCount = len(userResult.Entries)
+	}
+
+	response.Success(c, gin.H{
+		"message":   "LDAP连接测试成功",
+		"userCount": userCount,
+	})
 }

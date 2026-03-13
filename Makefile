@@ -20,7 +20,7 @@ build:
 # 运行服务
 run:
 	@echo "运行服务..."
-	@go run main.go server -c $(CONFIG_FILE)
+	@go run main.go server --config $(CONFIG_FILE)
 
 # 清理
 clean:

@@ -31,6 +31,7 @@ type UserRepo interface {
 	AssignRoles(ctx context.Context, userID uint, roleIDs []uint) error
 	AssignPositions(ctx context.Context, userID uint, positionIDs []uint) error
 	UpdateLastLogin(ctx context.Context, userID uint) error
+	UpdatePassword(ctx context.Context, userID uint, hashedPassword string) error
 }
 
 type RoleRepo interface {

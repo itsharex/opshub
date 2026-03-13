@@ -28,15 +28,20 @@ import (
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+	mfabiz "github.com/ydcloud-dy/opshub/internal/biz/mfa"
 	"github.com/ydcloud-dy/opshub/internal/conf"
+	mfadata "github.com/ydcloud-dy/opshub/internal/data/mfa"
 	rbacdata "github.com/ydcloud-dy/opshub/internal/data/rbac"
 	"github.com/ydcloud-dy/opshub/internal/plugin"
 	assetserver "github.com/ydcloud-dy/opshub/internal/server/asset"
 	auditserver "github.com/ydcloud-dy/opshub/internal/server/audit"
 	identityserver "github.com/ydcloud-dy/opshub/internal/server/identity"
+	mfaserver "github.com/ydcloud-dy/opshub/internal/server/mfa"
 	"github.com/ydcloud-dy/opshub/internal/server/rbac"
 	systemserver "github.com/ydcloud-dy/opshub/internal/server/system"
 	"github.com/ydcloud-dy/opshub/internal/service"
+	mfaservice "github.com/ydcloud-dy/opshub/internal/service/mfa"
+	rbacservice "github.com/ydcloud-dy/opshub/internal/service/rbac"
 	appLogger "github.com/ydcloud-dy/opshub/pkg/logger"
 	"github.com/ydcloud-dy/opshub/pkg/middleware"
 	k8splugin "github.com/ydcloud-dy/opshub/plugins/kubernetes"
@@ -156,6 +161,20 @@ func (s *HTTPServer) registerRoutes(router *gin.Engine, jwtSecret string) {
 	// 设置配置用例到用户服务（用于密码验证和登录锁定）
 	userService.SetConfigUseCase(configUseCase)
 
+	// 创建并注入LDAP认证服务
+	ldapAuthService := rbacservice.NewLDAPAuthService(configUseCase, userService.GetUserUseCase())
+	userService.SetLDAPAuthService(ldapAuthService)
+
+	// 创建 MFA 服务
+	mfaRepo := mfadata.NewRepository(s.db)
+	mfaUseCase := mfabiz.NewUseCase(mfaRepo, "OpsHub", []byte(jwtSecret))
+	userService.SetMFAUseCase(mfaUseCase)
+
+	// MFA HTTP服务
+	mfaService := mfaservice.NewService(mfaUseCase, userService.GetAuthService(), userService.GetUserUseCase())
+	mfaHTTPServer := mfaserver.NewHTTPServer(mfaService)
+	mfaHTTPServer.SetConfigUseCase(configUseCase)
+
 	// 创建 Audit 服务
 	operationLogService, loginLogService, dataLogService := auditserver.NewAuditServices(s.db)
 
@@ -175,14 +194,16 @@ func (s *HTTPServer) registerRoutes(router *gin.Engine, jwtSecret string) {
 		public.GET("/example", s.svc.Example)
 	}
 
-	// 创建 Identity 服务（提前创建，用于公开路由）
-	identityServer, err := identityserver.NewIdentityServices(s.db, s.conf)
-	if err != nil {
-		appLogger.Error("创建Identity服务失败", zap.Error(err))
-	} else {
-		// 注册 Identity 公开路由
-		identityServer.RegisterPublicRoutes(public)
-	}
+	// 身份认证模块暂不开放，如需启用请取消下方注释
+	// identityServer, err := identityserver.NewIdentityServices(s.db, s.conf)
+	// if err != nil {
+	// 	appLogger.Error("创建Identity服务失败", zap.Error(err))
+	// } else {
+	// 	// 注册 Identity 公开路由
+	// 	identityServer.RegisterPublicRoutes(public)
+	// }
+	var identityServer *identityserver.HTTPServer = nil
+	_ = identityServer
 
 	// API v1 - 需要认证的接口
 	v1 := router.Group("/api/v1")
@@ -195,12 +216,11 @@ func (s *HTTPServer) registerRoutes(router *gin.Engine, jwtSecret string) {
 		// 注册 Asset 路由
 		assetServer.RegisterRoutes(v1)
 
-		// 注册 Identity 路由
-		if identityServer != nil {
-			identityServer.RegisterRoutes(v1)
-			// 注册 OAuth2 服务端路由（在根路径 /oauth2）
-			identityServer.RegisterOAuth2Routes(router, authMiddleware.AuthRequired, authMiddleware.OptionalAuth)
-		}
+		// 身份认证模块暂不开放，如需启用请取消下方注释
+		// if identityServer != nil {
+		// 	identityServer.RegisterRoutes(v1)
+		// 	identityServer.RegisterOAuth2Routes(router, authMiddleware.AuthRequired, authMiddleware.OptionalAuth)
+		// }
 
 		// 上传接口
 		v1.POST("/upload/avatar", s.uploadSrv.UploadAvatar)
@@ -209,6 +229,9 @@ func (s *HTTPServer) registerRoutes(router *gin.Engine, jwtSecret string) {
 		// 系统配置路由
 		systemHTTPServer := systemserver.NewHTTPServer(configService)
 		systemHTTPServer.RegisterRoutes(v1, public)
+
+		// MFA 路由
+		mfaHTTPServer.RegisterRoutes(v1)
 	}
 
 	// 插件路由

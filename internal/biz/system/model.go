@@ -70,12 +70,22 @@ const (
 	ConfigKeyEnableCaptcha     = "enable_captcha"
 	ConfigKeyMaxLoginAttempts  = "max_login_attempts"
 	ConfigKeyLockoutDuration   = "lockout_duration"
+
+	// MFA 配置
+	ConfigKeyMFAEnabled      = "mfa_enabled"       // 是否启用MFA功能
+	ConfigKeyMFAEnforced     = "mfa_enforced"      // 是否强制所有用户启用MFA
+	ConfigKeyMFAType         = "mfa_type"          // MFA类型（totp）
+	ConfigKeyMFASkipDuration = "mfa_skip_duration" // MFA记住设备时长（秒）
+
+	// LDAP 配置
+	ConfigKeyLDAPConfig = "ldap_config" // JSON格式存储完整LDAP配置
 )
 
 // ConfigGroup 配置分组常量
 const (
 	ConfigGroupBasic    = "basic"
 	ConfigGroupSecurity = "security"
+	ConfigGroupLDAP     = "ldap"
 )
 
 // DefaultConfigs 默认配置
@@ -136,6 +146,41 @@ var DefaultConfigs = map[string]SysConfig{
 		Group:  ConfigGroupSecurity,
 		Remark: "账户锁定时间(秒)",
 	},
+	ConfigKeyMFAEnabled: {
+		Key:    ConfigKeyMFAEnabled,
+		Value:  "false",
+		Type:   "bool",
+		Group:  ConfigGroupSecurity,
+		Remark: "是否启用MFA功能",
+	},
+	ConfigKeyMFAEnforced: {
+		Key:    ConfigKeyMFAEnforced,
+		Value:  "false",
+		Type:   "bool",
+		Group:  ConfigGroupSecurity,
+		Remark: "是否强制所有用户启用MFA",
+	},
+	ConfigKeyMFAType: {
+		Key:    ConfigKeyMFAType,
+		Value:  "totp",
+		Type:   "string",
+		Group:  ConfigGroupSecurity,
+		Remark: "MFA类型(totp)",
+	},
+	ConfigKeyMFASkipDuration: {
+		Key:    ConfigKeyMFASkipDuration,
+		Value:  "2592000",
+		Type:   "int",
+		Group:  ConfigGroupSecurity,
+		Remark: "MFA记住设备时长(秒)，默认30天",
+	},
+	ConfigKeyLDAPConfig: {
+		Key:    ConfigKeyLDAPConfig,
+		Value:  `{"enabled":false,"host":"","port":389,"useTls":false,"startTls":false,"skipVerify":false,"bindDn":"","bindPassword":"","baseDn":"","userFilter":"(uid=%s)","attrUsername":"uid","attrEmail":"mail","attrRealName":"cn","attrPhone":"telephoneNumber","defaultRoleId":0,"defaultDeptId":0,"autoCreateUser":true}`,
+		Type:   "json",
+		Group:  ConfigGroupLDAP,
+		Remark: "LDAP配置(JSON)",
+	},
 }
 
 // BasicConfig 基础配置响应结构
@@ -152,10 +197,51 @@ type SecurityConfig struct {
 	EnableCaptcha     bool `json:"enableCaptcha"`
 	MaxLoginAttempts  int  `json:"maxLoginAttempts"`
 	LockoutDuration   int  `json:"lockoutDuration"`
+	// MFA配置
+	MFAEnabled      bool   `json:"mfaEnabled"`
+	MFAEnforced     bool   `json:"mfaEnforced"`
+	MFAType         string `json:"mfaType"`
+	MFASkipDuration int    `json:"mfaSkipDuration"`
+}
+
+// LDAPConfig LDAP配置结构
+type LDAPConfig struct {
+	Enabled        bool   `json:"enabled"`        // 是否启用LDAP
+	Host           string `json:"host"`           // LDAP服务器地址
+	Port           int    `json:"port"`           // 端口（389/636）
+	UseTLS         bool   `json:"useTls"`         // 是否使用LDAPS
+	StartTLS       bool   `json:"startTls"`       // 是否使用StartTLS
+	SkipVerify     bool   `json:"skipVerify"`     // 跳过TLS证书验证
+	BindDN         string `json:"bindDn"`         // 管理员DN
+	BindPassword   string `json:"bindPassword"`   // 管理员密码
+	BaseDN         string `json:"baseDn"`         // 搜索根DN
+	UserFilter     string `json:"userFilter"`     // 用户搜索过滤器，如 (uid=%s)
+	AttrUsername   string `json:"attrUsername"`   // 用户名属性（uid/sAMAccountName）
+	AttrEmail      string `json:"attrEmail"`      // 邮箱属性（mail）
+	AttrRealName   string `json:"attrRealName"`   // 姓名属性（cn/displayName）
+	AttrPhone      string `json:"attrPhone"`      // 电话属性（telephoneNumber）
+	DefaultRoleID  uint   `json:"defaultRoleId"`  // LDAP用户默认角色ID
+	DefaultDeptID  uint   `json:"defaultDeptId"`  // LDAP用户默认部门ID
+	AutoCreateUser bool   `json:"autoCreateUser"` // 登录时自动创建本地用户
+}
+
+// GetDefaultLDAPConfig 获取LDAP默认配置
+func GetDefaultLDAPConfig() *LDAPConfig {
+	return &LDAPConfig{
+		Enabled:        false,
+		Port:           389,
+		UserFilter:     "(uid=%s)",
+		AttrUsername:   "uid",
+		AttrEmail:      "mail",
+		AttrRealName:   "cn",
+		AttrPhone:      "telephoneNumber",
+		AutoCreateUser: true,
+	}
 }
 
 // AllConfig 所有配置响应结构
 type AllConfig struct {
 	Basic    BasicConfig    `json:"basic"`
 	Security SecurityConfig `json:"security"`
+	LDAP     *LDAPConfig    `json:"ldap,omitempty"`
 }

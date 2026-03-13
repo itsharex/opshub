@@ -67,6 +67,11 @@ func (s *HTTPServer) RegisterRoutes(r *gin.Engine) {
 	public := r.Group("/api/v1/public")
 	{
 		public.POST("/login", s.userService.Login)
+		// MFA登录路由
+		auth := public.Group("/auth/mfa")
+		{
+			auth.POST("/login", s.userService.MFALogin)
+		}
 	}
 
 	// 验证码路由（无需认证）

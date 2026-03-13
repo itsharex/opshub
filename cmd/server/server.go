@@ -33,6 +33,7 @@ import (
 	"github.com/ydcloud-dy/opshub/internal/biz"
 	assetmodel "github.com/ydcloud-dy/opshub/internal/biz/asset"
 	auditmodel "github.com/ydcloud-dy/opshub/internal/biz/audit"
+	mfamodel "github.com/ydcloud-dy/opshub/internal/biz/mfa"
 	rbacmodel "github.com/ydcloud-dy/opshub/internal/biz/rbac"
 	systemmodel "github.com/ydcloud-dy/opshub/internal/biz/system"
 	"github.com/ydcloud-dy/opshub/internal/conf"
@@ -202,6 +203,10 @@ func autoMigrate(db *gorm.DB) error {
 		&auditmodel.SysOperationLog{},
 		&auditmodel.SysLoginLog{},
 		&auditmodel.SysDataLog{},
+		// MFA相关表
+		&mfamodel.UserMFA{},
+		&mfamodel.MFALog{},
+		&mfamodel.TrustedDevice{},
 	); err != nil {
 		return err
 	}
@@ -334,25 +339,24 @@ func initDefaultData(db *gorm.DB) error {
 		}
 	}
 
-	// ========== 3. 身份认证 ==========
-	identityMenu := &rbacmodel.SysMenu{Name: "身份认证", Code: "identity", Type: 1, ParentID: 0, Path: "/identity", Icon: "Key", Sort: 2, Visible: 1, Status: 1}
-	if err := createMenuWithPermission(identityMenu); err != nil {
-		return fmt.Errorf("创建身份认证菜单失败: %w", err)
-	}
-
-	identitySubMenus := []*rbacmodel.SysMenu{
-		{Name: "身份源管理", Code: "identity_sources", Type: 2, ParentID: identityMenu.ID, Path: "/identity/sources", Component: "identity/IdentitySources", Icon: "User", Sort: 1, Visible: 1, Status: 1},
-		{Name: "应用管理", Code: "identity_apps", Type: 2, ParentID: identityMenu.ID, Path: "/identity/apps", Component: "identity/SSOApplications", Icon: "Grid", Sort: 2, Visible: 1, Status: 1},
-		{Name: "凭证管理", Code: "identity_credentials", Type: 2, ParentID: identityMenu.ID, Path: "/identity/credentials", Component: "identity/Credentials", Icon: "Lock", Sort: 3, Visible: 1, Status: 1},
-		{Name: "访问策略", Code: "identity_permissions", Type: 2, ParentID: identityMenu.ID, Path: "/identity/permissions", Component: "identity/Permissions", Icon: "Key", Sort: 4, Visible: 1, Status: 1},
-		{Name: "认证日志", Code: "identity_logs", Type: 2, ParentID: identityMenu.ID, Path: "/identity/logs", Component: "identity/AuthLogs", Icon: "Document", Sort: 5, Visible: 1, Status: 1},
-		{Name: "应用门户", Code: "identity_portal", Type: 2, ParentID: identityMenu.ID, Path: "/identity/portal", Component: "identity/Portal", Icon: "Menu", Sort: 6, Visible: 1, Status: 1},
-	}
-	for _, menu := range identitySubMenus {
-		if err := createMenuWithPermission(menu); err != nil {
-			return fmt.Errorf("创建身份认证子菜单失败: %w", err)
-		}
-	}
+	// ========== 3. 身份认证（暂不开放，如需启用请取消注释） ==========
+	// identityMenu := &rbacmodel.SysMenu{Name: "身份认证", Code: "identity", Type: 1, ParentID: 0, Path: "/identity", Icon: "Key", Sort: 2, Visible: 1, Status: 1}
+	// if err := createMenuWithPermission(identityMenu); err != nil {
+	// 	return fmt.Errorf("创建身份认证菜单失败: %w", err)
+	// }
+	// identitySubMenus := []*rbacmodel.SysMenu{
+	// 	{Name: "身份源管理", Code: "identity_sources", Type: 2, ParentID: identityMenu.ID, Path: "/identity/sources", Component: "identity/IdentitySources", Icon: "User", Sort: 1, Visible: 1, Status: 1},
+	// 	{Name: "应用管理", Code: "identity_apps", Type: 2, ParentID: identityMenu.ID, Path: "/identity/apps", Component: "identity/SSOApplications", Icon: "Grid", Sort: 2, Visible: 1, Status: 1},
+	// 	{Name: "凭证管理", Code: "identity_credentials", Type: 2, ParentID: identityMenu.ID, Path: "/identity/credentials", Component: "identity/Credentials", Icon: "Lock", Sort: 3, Visible: 1, Status: 1},
+	// 	{Name: "访问策略", Code: "identity_permissions", Type: 2, ParentID: identityMenu.ID, Path: "/identity/permissions", Component: "identity/Permissions", Icon: "Key", Sort: 4, Visible: 1, Status: 1},
+	// 	{Name: "认证日志", Code: "identity_logs", Type: 2, ParentID: identityMenu.ID, Path: "/identity/logs", Component: "identity/AuthLogs", Icon: "Document", Sort: 5, Visible: 1, Status: 1},
+	// 	{Name: "应用门户", Code: "identity_portal", Type: 2, ParentID: identityMenu.ID, Path: "/identity/portal", Component: "identity/Portal", Icon: "Menu", Sort: 6, Visible: 1, Status: 1},
+	// }
+	// for _, menu := range identitySubMenus {
+	// 	if err := createMenuWithPermission(menu); err != nil {
+	// 		return fmt.Errorf("创建身份认证子菜单失败: %w", err)
+	// 	}
+	// }
 
 	// ========== 4. 操作审计 ==========
 	auditMenu := &rbacmodel.SysMenu{Name: "操作审计", Code: "audit", Type: 1, ParentID: 0, Path: "/audit", Icon: "Document", Sort: 50, Visible: 1, Status: 1}

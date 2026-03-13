@@ -43,7 +43,27 @@ func (r *userRepo) Create(ctx context.Context, user *rbac.SysUser) error {
 }
 
 func (r *userRepo) Update(ctx context.Context, user *rbac.SysUser) error {
-	return r.db.WithContext(ctx).Model(user).Omit("created_at").Updates(user).Error
+	// 使用Select明确指定要更新的字段，包括零值字段（如status=0）
+	// 注意：必须使用 Select 来确保 status=0 这样的零值也能被更新
+	// 注意：password 不在此方法中更新，密码更新请使用 UpdatePassword
+	return r.db.WithContext(ctx).Model(&rbac.SysUser{}).Where("id = ?", user.ID).
+		Select("username", "real_name", "email", "phone", "status", "department_id", "avatar", "bio", "last_login_at").
+		Updates(map[string]interface{}{
+			"username":      user.Username,
+			"real_name":     user.RealName,
+			"email":         user.Email,
+			"phone":         user.Phone,
+			"status":        user.Status,
+			"department_id": user.DepartmentID,
+			"avatar":        user.Avatar,
+			"bio":           user.Bio,
+			"last_login_at": user.LastLoginAt,
+		}).Error
+}
+
+func (r *userRepo) UpdatePassword(ctx context.Context, userID uint, hashedPassword string) error {
+	return r.db.WithContext(ctx).Model(&rbac.SysUser{}).Where("id = ?", userID).
+		Update("password", hashedPassword).Error
 }
 
 func (r *userRepo) Delete(ctx context.Context, id uint) error {

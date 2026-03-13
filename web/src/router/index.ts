@@ -12,10 +12,10 @@ const router = createRouter({
       meta: { title: '登录' }
     },
     {
-      path: '/oauth/callback/:provider?',
-      name: 'OAuthCallback',
-      component: () => import('@/views/auth/OAuthCallback.vue'),
-      meta: { title: '登录中...', public: true }
+      path: '/mfa/verify',
+      name: 'MFAVerify',
+      component: () => import('@/views/auth/MFAVerify.vue'),
+      meta: { title: 'MFA验证', public: true }
     },
     {
       path: '/',
@@ -64,6 +64,12 @@ const router = createRouter({
           name: 'SystemConfig',
           component: () => import('@/views/system/SystemConfig.vue'),
           meta: { title: '系统配置' }
+        },
+        {
+          path: 'mfa-settings',
+          name: 'MFASettings',
+          component: () => import('@/views/system/MFASettings.vue'),
+          meta: { title: '两步验证' }
         },
         {
           path: 'audit/operation-logs',
@@ -143,43 +149,43 @@ const router = createRouter({
           component: () => import('@/views/plugin/PluginInstall.vue'),
           meta: { title: '插件安装' }
         },
-        // 身份认证模块
-        {
-          path: 'identity/portal',
-          name: 'IdentityPortal',
-          component: () => import('@/views/identity/Portal.vue'),
-          meta: { title: '应用门户' }
-        },
-        {
-          path: 'identity/sources',
-          name: 'IdentitySources',
-          component: () => import('@/views/identity/IdentitySources.vue'),
-          meta: { title: '身份源管理' }
-        },
-        {
-          path: 'identity/apps',
-          name: 'IdentityApps',
-          component: () => import('@/views/identity/SSOApplications.vue'),
-          meta: { title: '应用管理' }
-        },
-        {
-          path: 'identity/credentials',
-          name: 'IdentityCredentials',
-          component: () => import('@/views/identity/Credentials.vue'),
-          meta: { title: '凭证管理' }
-        },
-        {
-          path: 'identity/permissions',
-          name: 'IdentityPermissions',
-          component: () => import('@/views/identity/Permissions.vue'),
-          meta: { title: '访问策略' }
-        },
-        {
-          path: 'identity/logs',
-          name: 'IdentityLogs',
-          component: () => import('@/views/identity/AuthLogs.vue'),
-          meta: { title: '认证日志' }
-        }
+        // 身份认证模块（暂不开放，如需启用请取消注释）
+        // {
+        //   path: 'identity/portal',
+        //   name: 'IdentityPortal',
+        //   component: () => import('@/views/identity/Portal.vue'),
+        //   meta: { title: '应用门户' }
+        // },
+        // {
+        //   path: 'identity/sources',
+        //   name: 'IdentitySources',
+        //   component: () => import('@/views/identity/IdentitySources.vue'),
+        //   meta: { title: '身份源管理' }
+        // },
+        // {
+        //   path: 'identity/apps',
+        //   name: 'IdentityApps',
+        //   component: () => import('@/views/identity/SSOApplications.vue'),
+        //   meta: { title: '应用管理' }
+        // },
+        // {
+        //   path: 'identity/credentials',
+        //   name: 'IdentityCredentials',
+        //   component: () => import('@/views/identity/Credentials.vue'),
+        //   meta: { title: '凭证管理' }
+        // },
+        // {
+        //   path: 'identity/permissions',
+        //   name: 'IdentityPermissions',
+        //   component: () => import('@/views/identity/Permissions.vue'),
+        //   meta: { title: '访问策略' }
+        // },
+        // {
+        //   path: 'identity/logs',
+        //   name: 'IdentityLogs',
+        //   component: () => import('@/views/identity/AuthLogs.vue'),
+        //   meta: { title: '认证日志' }
+        // }
       ]
     }
   ]
@@ -202,8 +208,33 @@ export function registerPluginRoutes() {
   }
 }
 
+// MFA检查缓存
+let mfaCheckCache: { enforced: boolean; enabled: boolean; timestamp: number } | null = null
+const MFA_CACHE_DURATION = 5 * 60 * 1000 // 5分钟缓存
+
+// 更新MFA缓存状态（供外部调用）
+export function updateMFACache(enabled: boolean, enforced: boolean = false) {
+  mfaCheckCache = {
+    enforced,
+    enabled,
+    timestamp: Date.now()
+  }
+  // 同步更新localStorage标记
+  if (enforced && !enabled) {
+    localStorage.setItem('mfa_setup_required', 'true')
+  } else {
+    localStorage.removeItem('mfa_setup_required')
+  }
+}
+
+// 清除MFA强制标记（登出时调用）
+export function clearMFAFlag() {
+  mfaCheckCache = null
+  localStorage.removeItem('mfa_setup_required')
+}
+
 // 路由守卫
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   const token = localStorage.getItem('token')
 
   // 公开路由（登录页、OAuth回调等）
@@ -213,14 +244,68 @@ router.beforeEach((to, from, next) => {
     } else {
       next()
     }
-  } else {
-    // 访问其他页面，需要检查登录状态
-    if (!token) {
-      next('/login')
-    } else {
-      next()
+    return
+  }
+
+  // 访问其他页面，需要检查登录状态
+  if (!token) {
+    next('/login')
+    return
+  }
+
+  // 检查MFA强制设置
+  if (to.path !== '/mfa-settings') {
+    // 先做同步检查：如果localStorage中有强制MFA标记，立即拦截
+    const mfaRequired = localStorage.getItem('mfa_setup_required')
+    if (mfaRequired === 'true') {
+      next('/mfa-settings?force=true')
+      return
+    }
+
+    try {
+      // 检查缓存是否有效
+      const now = Date.now()
+      if (mfaCheckCache && (now - mfaCheckCache.timestamp) < MFA_CACHE_DURATION) {
+        // 使用缓存数据
+        if (mfaCheckCache.enforced && !mfaCheckCache.enabled) {
+          localStorage.setItem('mfa_setup_required', 'true')
+          next('/mfa-settings?force=true')
+          return
+        }
+      } else {
+        // 缓存过期或不存在，重新获取
+        const { getSecurityConfig } = await import('@/api/system')
+        const { getMFAStatus } = await import('@/api/mfa')
+
+        const [securityConfig, mfaStatus] = await Promise.all([
+          getSecurityConfig(),
+          getMFAStatus()
+        ])
+
+        // 更新缓存
+        mfaCheckCache = {
+          enforced: securityConfig.mfaEnforced,
+          enabled: mfaStatus.isEnabled,
+          timestamp: now
+        }
+
+        // 如果系统开启了强制MFA，且用户未启用MFA，则强制跳转到MFA设置页面
+        if (securityConfig.mfaEnforced && !mfaStatus.isEnabled) {
+          localStorage.setItem('mfa_setup_required', 'true')
+          next('/mfa-settings?force=true')
+          return
+        } else {
+          localStorage.removeItem('mfa_setup_required')
+        }
+      }
+    } catch (error) {
+      console.error('检查MFA状态失败', error)
+      // 如果检查失败但之前已知需要MFA设置，仍然阻止访问
+      // （这里mfaRequired已经在上面检查过了，到这里说明之前没有标记，允许通过）
     }
   }
+
+  next()
 })
 
 export default router

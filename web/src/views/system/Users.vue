@@ -63,7 +63,12 @@
               <el-avatar v-else :size="50">{{ row.realName?.substring(0, 1) || row.username.substring(0, 1) }}</el-avatar>
             </template>
           </el-table-column>
-          <el-table-column prop="username" label="用户名" min-width="120" />
+          <el-table-column prop="username" label="用户名" min-width="140">
+            <template #default="{ row }">
+              <span>{{ row.username }}</span>
+              <el-tag v-if="row.source === 'ldap'" size="small" type="info" style="margin-left: 6px;">LDAP</el-tag>
+            </template>
+          </el-table-column>
           <el-table-column prop="realName" label="真实姓名" min-width="120" />
           <el-table-column prop="email" label="邮箱" min-width="180" />
           <el-table-column prop="phone" label="手机号" min-width="130" />
@@ -90,8 +95,15 @@
               <el-tooltip content="编辑" placement="top">
                 <el-button type="primary" size="small" :icon="Edit" circle @click="handleEdit(row)" />
               </el-tooltip>
-              <el-tooltip content="重置密码" placement="top">
-                <el-button type="info" size="small" :icon="Key" circle @click="handleResetPassword(row)" />
+              <el-tooltip :content="row.source === 'ldap' ? 'LDAP用户无法重置密码' : '重置密码'" placement="top">
+                <el-button
+                  type="info"
+                  size="small"
+                  :icon="Key"
+                  circle
+                  @click="handleResetPassword(row)"
+                  :disabled="row.source === 'ldap'"
+                />
               </el-tooltip>
               <el-tooltip content="删除" placement="top">
                 <el-button type="danger" size="small" :icon="Delete" circle @click="handleDelete(row)" />

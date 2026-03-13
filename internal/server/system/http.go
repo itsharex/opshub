@@ -52,6 +52,11 @@ func (s *HTTPServer) RegisterRoutes(auth *gin.RouterGroup, public *gin.RouterGro
 			config.GET("/security", s.configService.GetSecurityConfig)
 			config.PUT("/security", s.configService.SaveSecurityConfig)
 			config.POST("/logo", s.configService.UploadLogo)
+
+			// LDAP 配置
+			config.GET("/ldap", s.configService.GetLDAPConfig)
+			config.PUT("/ldap", s.configService.SaveLDAPConfig)
+			config.POST("/ldap/test", s.configService.TestLDAPConnection)
 		}
 	}
 

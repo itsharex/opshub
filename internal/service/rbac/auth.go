@@ -28,8 +28,9 @@ import (
 )
 
 type JwtClaims struct {
-	UserID   uint   `json:"user_id"`
-	Username string `json:"username"`
+	UserID    uint   `json:"user_id"`
+	Username  string `json:"username"`
+	TokenType string `json:"token_type"`
 	jwt.RegisteredClaims
 }
 
@@ -47,8 +48,9 @@ func NewAuthService(secretKey string, roleUseCase *rbac.RoleUseCase) *AuthServic
 
 func (s *AuthService) GenerateToken(userID uint, username string) (string, error) {
 	claims := JwtClaims{
-		UserID:   userID,
-		Username: username,
+		UserID:    userID,
+		Username:  username,
+		TokenType: "auth",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -70,8 +72,58 @@ func (s *AuthService) ParseToken(tokenString string) (*JwtClaims, error) {
 	}
 
 	if claims, ok := token.Claims.(*JwtClaims); ok && token.Valid {
+		// 验证token类型，防止MFA token被当作普通token使用
+		if claims.TokenType == "mfa" {
+			return nil, errors.New("invalid token type")
+		}
 		return claims, nil
 	}
 
 	return nil, errors.New("invalid token")
+}
+
+// MFAJwtClaims MFA临时Token的Claims
+type MFAJwtClaims struct {
+	UserID    uint   `json:"user_id"`
+	Username  string `json:"username"`
+	TokenType string `json:"token_type"`
+	jwt.RegisteredClaims
+}
+
+// GenerateMFAToken 生成MFA临时Token（5分钟有效）
+func (s *AuthService) GenerateMFAToken(userID uint, username string) (string, error) {
+	claims := MFAJwtClaims{
+		UserID:    userID,
+		Username:  username,
+		TokenType: "mfa",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(5 * time.Minute)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(s.secretKey))
+}
+
+// ParseMFAToken 解析MFA临时Token
+func (s *AuthService) ParseMFAToken(tokenString string) (*MFAJwtClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &MFAJwtClaims{}, func(token *jwt.Token) (interface{}, error) {
+		return []byte(s.secretKey), nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if claims, ok := token.Claims.(*MFAJwtClaims); ok && token.Valid {
+		// 验证token类型，确保是MFA token而不是普通auth token
+		if claims.TokenType != "mfa" {
+			return nil, errors.New("invalid mfa token type")
+		}
+		return claims, nil
+	}
+
+	return nil, errors.New("invalid mfa token")
 }

@@ -467,6 +467,8 @@ const handleUserCommand = (command: string) => {
 }
 
 const handleLogout = () => {
+  // 清除MFA缓存和标记
+  import('@/router').then(({ clearMFAFlag }) => clearMFAFlag())
   userStore.logout()
   router.push('/login')
 }

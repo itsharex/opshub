@@ -23,9 +23,12 @@ export const useUserStore = defineStore('user', {
     // 登录
     async login(params: LoginParams) {
       const res = await login(params)
-      this.token = res.token
-      this.userInfo = res.user
-      localStorage.setItem('token', res.token)
+      // 仅在获取到有效token时才更新store（MFA验证时token为空）
+      if (res.token) {
+        this.token = res.token
+        this.userInfo = res.user
+        localStorage.setItem('token', res.token)
+      }
       return res
     },
 
@@ -49,6 +52,7 @@ export const useUserStore = defineStore('user', {
       this.token = ''
       this.userInfo = null
       localStorage.removeItem('token')
+      localStorage.removeItem('mfa_setup_required')
     },
 
     // 更新头像
@@ -61,6 +65,18 @@ export const useUserStore = defineStore('user', {
         }
         this.avatarTimestamp = Date.now()
       }
+    },
+
+    // 设置Token
+    setToken(token: string) {
+      this.token = token
+      localStorage.setItem('token', token)
+    },
+
+    // 设置用户信息
+    setUserInfo(userInfo: any) {
+      this.userInfo = userInfo
+      this.avatarTimestamp = Date.now()
     }
   }
 })

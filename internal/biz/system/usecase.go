@@ -21,6 +21,7 @@ package system
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"time"
 )
@@ -71,6 +72,9 @@ func (uc *ConfigUseCase) GetAllConfig(ctx context.Context) (*AllConfig, error) {
 		configMap[c.Key] = c.Value
 	}
 
+	// 获取LDAP配置
+	ldapConfig, _ := uc.GetLDAPConfig(ctx)
+
 	// 构建响应
 	result := &AllConfig{
 		Basic: BasicConfig{
@@ -84,7 +88,13 @@ func (uc *ConfigUseCase) GetAllConfig(ctx context.Context) (*AllConfig, error) {
 			EnableCaptcha:     getBoolValue(configMap, ConfigKeyEnableCaptcha, true),
 			MaxLoginAttempts:  getIntValue(configMap, ConfigKeyMaxLoginAttempts, 5),
 			LockoutDuration:   getIntValue(configMap, ConfigKeyLockoutDuration, 300),
+			// MFA配置
+			MFAEnabled:      getBoolValue(configMap, ConfigKeyMFAEnabled, false),
+			MFAEnforced:     getBoolValue(configMap, ConfigKeyMFAEnforced, false),
+			MFAType:         getStringValue(configMap, ConfigKeyMFAType, "totp"),
+			MFASkipDuration: getIntValue(configMap, ConfigKeyMFASkipDuration, 2592000),
 		},
+		LDAP: ldapConfig,
 	}
 
 	return result, nil
@@ -127,6 +137,11 @@ func (uc *ConfigUseCase) GetSecurityConfig(ctx context.Context) (*SecurityConfig
 		EnableCaptcha:     getBoolValue(configMap, ConfigKeyEnableCaptcha, true),
 		MaxLoginAttempts:  getIntValue(configMap, ConfigKeyMaxLoginAttempts, 5),
 		LockoutDuration:   getIntValue(configMap, ConfigKeyLockoutDuration, 300),
+		// MFA配置
+		MFAEnabled:      getBoolValue(configMap, ConfigKeyMFAEnabled, false),
+		MFAEnforced:     getBoolValue(configMap, ConfigKeyMFAEnforced, false),
+		MFAType:         getStringValue(configMap, ConfigKeyMFAType, "totp"),
+		MFASkipDuration: getIntValue(configMap, ConfigKeyMFASkipDuration, 2592000),
 	}, nil
 }
 
@@ -148,6 +163,11 @@ func (uc *ConfigUseCase) SaveSecurityConfig(ctx context.Context, config *Securit
 		ConfigKeyEnableCaptcha:     strconv.FormatBool(config.EnableCaptcha),
 		ConfigKeyMaxLoginAttempts:  strconv.Itoa(config.MaxLoginAttempts),
 		ConfigKeyLockoutDuration:   strconv.Itoa(config.LockoutDuration),
+		// MFA配置
+		ConfigKeyMFAEnabled:      strconv.FormatBool(config.MFAEnabled),
+		ConfigKeyMFAEnforced:     strconv.FormatBool(config.MFAEnforced),
+		ConfigKeyMFAType:         config.MFAType,
+		ConfigKeyMFASkipDuration: strconv.Itoa(config.MFASkipDuration),
 	}
 	return uc.configRepo.BatchSaveOrUpdate(ctx, configs)
 }
@@ -222,6 +242,59 @@ func (uc *ConfigUseCase) ResetLoginAttempt(ctx context.Context, username string)
 // InitDefaultConfigs 初始化默认配置
 func (uc *ConfigUseCase) InitDefaultConfigs(ctx context.Context) error {
 	return uc.configRepo.InitDefaultConfigs(ctx)
+}
+
+// GetLDAPConfig 获取LDAP配置
+func (uc *ConfigUseCase) GetLDAPConfig(ctx context.Context) (*LDAPConfig, error) {
+	value, err := uc.GetConfigByKey(ctx, ConfigKeyLDAPConfig)
+	if err != nil || value == "" {
+		return GetDefaultLDAPConfig(), nil
+	}
+
+	var config LDAPConfig
+	if err := json.Unmarshal([]byte(value), &config); err != nil {
+		return GetDefaultLDAPConfig(), nil
+	}
+
+	// 设置默认值
+	if config.Port == 0 {
+		config.Port = 389
+	}
+	if config.UserFilter == "" {
+		config.UserFilter = "(uid=%s)"
+	}
+	if config.AttrUsername == "" {
+		config.AttrUsername = "uid"
+	}
+	if config.AttrEmail == "" {
+		config.AttrEmail = "mail"
+	}
+	if config.AttrRealName == "" {
+		config.AttrRealName = "cn"
+	}
+	if config.AttrPhone == "" {
+		config.AttrPhone = "telephoneNumber"
+	}
+
+	return &config, nil
+}
+
+// SaveLDAPConfig 保存LDAP配置
+func (uc *ConfigUseCase) SaveLDAPConfig(ctx context.Context, config *LDAPConfig) error {
+	data, err := json.Marshal(config)
+	if err != nil {
+		return err
+	}
+	return uc.configRepo.SaveOrUpdate(ctx, ConfigKeyLDAPConfig, string(data))
+}
+
+// IsLDAPEnabled 检查LDAP是否启用
+func (uc *ConfigUseCase) IsLDAPEnabled(ctx context.Context) bool {
+	config, err := uc.GetLDAPConfig(ctx)
+	if err != nil {
+		return false
+	}
+	return config.Enabled
 }
 
 // 辅助函数

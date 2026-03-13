@@ -92,6 +92,12 @@
             </div>
           </el-form-item>
 
+          <!-- LDAP 提示 -->
+          <div v-if="ldapEnabled" class="ldap-hint">
+            <el-icon><Connection /></el-icon>
+            <span>已启用 LDAP 认证，支持使用域账号登录</span>
+          </div>
+
           <el-form-item>
             <div class="form-options">
               <el-checkbox v-model="loginForm.remember">记住登录名</el-checkbox>
@@ -109,25 +115,6 @@
             </el-button>
           </el-form-item>
         </el-form>
-
-        <!-- 第三方登录 -->
-        <div v-if="enabledProviders.length > 0" class="social-login-section">
-          <div class="social-divider">
-            <span>或使用第三方登录</span>
-          </div>
-          <div class="social-buttons">
-            <div
-              v-for="provider in enabledProviders"
-              :key="provider.id"
-              class="social-button"
-              @click="handleSocialLogin(provider)"
-            >
-              <img v-if="provider.icon" :src="provider.icon" :alt="provider.name" class="provider-icon" />
-              <span v-else class="provider-initial">{{ provider.name.charAt(0) }}</span>
-              <span class="provider-name">{{ provider.name }}</span>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   </div>
@@ -137,18 +124,11 @@
 import { reactive, ref, onMounted, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, FormInstance } from 'element-plus'
-import { User, Lock, Key } from '@element-plus/icons-vue'
+import { User, Lock, Key, Connection } from '@element-plus/icons-vue'
 import { useUserStore } from '@/stores/user'
 import { useSystemStore } from '@/stores/system'
 import request from '@/utils/request'
 import { getPublicConfig } from '@/api/system'
-
-interface Provider {
-  id: number
-  name: string
-  type: string
-  icon: string
-}
 
 const router = useRouter()
 const route = useRoute()
@@ -159,7 +139,7 @@ const loading = ref(false)
 const captchaImage = ref('')
 const captchaId = ref('')
 const captchaEnabled = ref(true) // 默认开启验证码
-const enabledProviders = ref<Provider[]>([])
+const ldapEnabled = ref(false) // LDAP是否启用
 
 const loginForm = reactive({
   username: '',
@@ -184,6 +164,7 @@ const loadPublicConfig = async () => {
     const res = await getPublicConfig()
     if (res) {
       captchaEnabled.value = res.enableCaptcha !== false
+      ldapEnabled.value = res.ldapEnabled === true
       // 更新系统配置store（用于显示系统名称、Logo、更新页面标题和favicon）
       systemStore.updateConfig({
         systemName: res.systemName,
@@ -220,12 +201,35 @@ const handleLogin = async () => {
     if (valid) {
       loading.value = true
       try {
-        await userStore.login({
+        const res = await userStore.login({
           username: loginForm.username,
           password: loginForm.password,
           captchaId: loginForm.captchaId,
           captchaCode: loginForm.captchaCode
         })
+
+        // 检查是否需要MFA验证
+        if (res.requireMfa) {
+          // 将mfaToken存入sessionStorage，避免URL传递的问题
+          sessionStorage.setItem('mfaToken', res.mfaToken)
+          // 跳转到MFA验证页面
+          await router.push({
+            path: '/mfa/verify',
+            query: {
+              redirect: route.query.redirect as string
+            }
+          })
+          return
+        }
+
+        // 检查是否需要强制设置MFA
+        if (res.requireSetup) {
+          // 设置强制MFA标记，路由守卫会用此标记阻止访问其他页面
+          localStorage.setItem('mfa_setup_required', 'true')
+          ElMessage.warning('系统已开启强制MFA，请先设置两步验证')
+          await router.push('/mfa-settings')
+          return
+        }
 
         // 如果选择了记住登录名，保存到本地
         if (loginForm.remember) {
@@ -279,34 +283,6 @@ const handleLogin = async () => {
   })
 }
 
-// 获取启用的身份源列表
-const fetchEnabledProviders = async () => {
-  try {
-    const res: any = await request.get('/api/v1/public/auth/providers')
-    enabledProviders.value = res || []
-  } catch (error) {
-    console.error('获取身份源列表失败', error)
-    enabledProviders.value = []
-  }
-}
-
-// 处理第三方登录
-const handleSocialLogin = async (provider: Provider) => {
-  try {
-    const redirectUrl = window.location.origin + '/oauth/callback/' + provider.type
-    const res: any = await request.get(`/api/v1/public/auth/oauth/${provider.type}/authorize`, {
-      params: { redirect_url: redirectUrl }
-    })
-    if (res?.authUrl) {
-      window.location.href = res.authUrl
-    } else {
-      ElMessage.error('获取授权链接失败')
-    }
-  } catch (error: any) {
-    ElMessage.error(error?.message || '第三方登录失败')
-  }
-}
-
 onMounted(async () => {
   const rememberedUsername = localStorage.getItem('rememberedUsername')
   if (rememberedUsername) {
@@ -317,7 +293,6 @@ onMounted(async () => {
   if (captchaEnabled.value) {
     refreshCaptcha()
   }
-  fetchEnabledProviders()
 })
 </script>
 
@@ -687,82 +662,22 @@ onMounted(async () => {
   }
 }
 
-/* 第三方登录样式 */
-.social-login-section {
-  margin-top: 30px;
-}
-
-.social-divider {
+/* LDAP 提示 */
+.ldap-hint {
   display: flex;
   align-items: center;
-  margin-bottom: 24px;
+  gap: 6px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: linear-gradient(135deg, #f6f8fc 0%, #eef2f9 100%);
+  border: 1px solid #d9e2ef;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #606266;
 }
 
-.social-divider::before,
-.social-divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, #e0e0e0, transparent);
-}
-
-.social-divider span {
-  padding: 0 16px;
+.ldap-hint .el-icon {
+  color: #409eff;
   font-size: 14px;
-  color: #999;
-  white-space: nowrap;
-}
-
-.social-buttons {
-  display: flex;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 16px;
-}
-
-.social-button {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 16px 24px;
-  border: 1px solid #e0e0e0;
-  border-radius: 12px;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  background: #fafafa;
-  min-width: 100px;
-}
-
-.social-button:hover {
-  border-color: #D4AF37;
-  background: #fff;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(212, 175, 55, 0.2);
-}
-
-.provider-icon {
-  width: 32px;
-  height: 32px;
-  object-fit: contain;
-  margin-bottom: 8px;
-}
-
-.provider-initial {
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, #D4AF37, #FFD700);
-  color: #fff;
-  font-size: 16px;
-  font-weight: 600;
-  border-radius: 50%;
-  margin-bottom: 8px;
-}
-
-.provider-name {
-  font-size: 13px;
-  color: #666;
 }
 </style>

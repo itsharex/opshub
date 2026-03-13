@@ -121,6 +121,162 @@
               <el-input-number v-model="config.lockoutDuration" :min="60" :step="60" />
               <span class="form-tip">单位：秒</span>
             </el-form-item>
+
+            <el-divider content-position="left">
+              <el-icon class="divider-icon"><Key /></el-icon>
+              MFA 多因素认证
+            </el-divider>
+
+            <el-form-item label="启用 MFA">
+              <el-switch
+                v-model="config.mfaEnabled"
+                active-text="开启"
+                inactive-text="关闭"
+              />
+              <span class="form-tip">启用后用户可绑定 MFA 设备</span>
+            </el-form-item>
+            <el-form-item label="强制 MFA" v-if="config.mfaEnabled">
+              <el-switch
+                v-model="config.mfaEnforced"
+                active-text="开启"
+                inactive-text="关闭"
+              />
+              <span class="form-tip">开启后所有用户必须绑定 MFA 才能登录</span>
+            </el-form-item>
+            <el-form-item label="MFA 类型" v-if="config.mfaEnabled">
+              <el-radio-group v-model="config.mfaType">
+                <el-radio value="totp">TOTP（验证器应用）</el-radio>
+              </el-radio-group>
+              <span class="form-tip">目前支持 Google/Microsoft Authenticator 等验证器应用</span>
+            </el-form-item>
+            <el-form-item label="记住设备时长" v-if="config.mfaEnabled">
+              <el-select v-model="config.mfaSkipDuration" style="width: 200px;">
+                <el-option :value="0" label="每次登录都需要验证" />
+                <el-option :value="86400" label="1 天" />
+                <el-option :value="604800" label="7 天" />
+                <el-option :value="1209600" label="14 天" />
+                <el-option :value="2592000" label="30 天" />
+              </el-select>
+              <span class="form-tip">同一设备在此时间内无需再次验证 MFA</span>
+            </el-form-item>
+          </el-form>
+        </div>
+
+        <!-- LDAP 配置 -->
+        <div v-show="activeNav === 2" class="config-section">
+          <div class="section-header">
+            <el-icon class="section-icon"><Connection /></el-icon>
+            <span>LDAP 配置</span>
+          </div>
+
+          <el-form :model="ldapConfig" label-width="160px" class="config-form">
+            <!-- 启用开关 -->
+            <el-form-item label="启用 LDAP 认证">
+              <el-switch
+                v-model="ldapConfig.enabled"
+                active-text="启用"
+                inactive-text="关闭"
+              />
+              <span class="form-tip">启用后支持使用 LDAP 账号登录系统</span>
+            </el-form-item>
+
+            <el-divider content-position="left">服务器设置</el-divider>
+
+            <el-form-item label="服务器地址">
+              <el-input v-model="ldapConfig.host" placeholder="如: ldap.example.com 或 192.168.1.100" />
+            </el-form-item>
+            <el-form-item label="端口">
+              <el-input-number v-model="ldapConfig.port" :min="1" :max="65535" />
+              <span class="form-tip">LDAP 默认 389，LDAPS 默认 636</span>
+            </el-form-item>
+            <el-form-item label="连接方式">
+              <el-radio-group v-model="ldapConnectionMode" @change="handleConnectionModeChange">
+                <el-radio value="plain">LDAP（明文）</el-radio>
+                <el-radio value="ldaps">LDAPS（SSL/TLS）</el-radio>
+                <el-radio value="starttls">StartTLS</el-radio>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item label="跳过证书验证" v-if="ldapConfig.useTls || ldapConfig.startTls">
+              <el-switch v-model="ldapConfig.skipVerify" />
+              <span class="form-tip">测试环境可开启，生产环境建议关闭</span>
+            </el-form-item>
+            <el-form-item>
+              <el-button @click="handleTestLDAP" :loading="ldapTesting" type="primary" plain>
+                测试连接
+              </el-button>
+              <div v-if="ldapTestResult" :class="['ldap-test-result', ldapTestResult.success ? 'success' : 'error']">
+                <el-icon v-if="ldapTestResult.success"><CircleCheckFilled /></el-icon>
+                <el-icon v-else><CircleCloseFilled /></el-icon>
+                <span>{{ ldapTestResult.message }}</span>
+                <span v-if="ldapTestResult.success && ldapTestResult.userCount !== undefined">
+                  （发现 {{ ldapTestResult.userCount }} 个用户）
+                </span>
+              </div>
+            </el-form-item>
+
+            <el-divider content-position="left">认证设置</el-divider>
+
+            <el-form-item label="Bind DN">
+              <el-input v-model="ldapConfig.bindDn" placeholder="如: cn=admin,dc=example,dc=com" />
+              <span class="form-tip">管理员 DN，用于搜索用户</span>
+            </el-form-item>
+            <el-form-item label="Bind 密码">
+              <el-input v-model="ldapConfig.bindPassword" type="password" show-password placeholder="Bind DN 对应的密码" />
+            </el-form-item>
+            <el-form-item label="Base DN">
+              <el-input v-model="ldapConfig.baseDn" placeholder="如: dc=example,dc=com" />
+              <span class="form-tip">用户搜索的根节点</span>
+            </el-form-item>
+            <el-form-item label="用户搜索过滤器">
+              <el-input v-model="ldapConfig.userFilter" placeholder="(uid=%s)" />
+              <span class="form-tip">%s 会被替换为用户名。OpenLDAP 用 (uid=%s)，AD 用 (sAMAccountName=%s)</span>
+            </el-form-item>
+
+            <el-divider content-position="left">属性映射</el-divider>
+
+            <el-form-item label="用户名属性">
+              <el-input v-model="ldapConfig.attrUsername" placeholder="uid" />
+              <span class="form-tip">OpenLDAP: uid | AD: sAMAccountName</span>
+            </el-form-item>
+            <el-form-item label="邮箱属性">
+              <el-input v-model="ldapConfig.attrEmail" placeholder="mail" />
+            </el-form-item>
+            <el-form-item label="姓名属性">
+              <el-input v-model="ldapConfig.attrRealName" placeholder="cn" />
+              <span class="form-tip">OpenLDAP: cn | AD: displayName</span>
+            </el-form-item>
+            <el-form-item label="电话属性">
+              <el-input v-model="ldapConfig.attrPhone" placeholder="telephoneNumber" />
+            </el-form-item>
+
+            <el-divider content-position="left">用户设置</el-divider>
+
+            <el-form-item label="自动创建用户">
+              <el-switch v-model="ldapConfig.autoCreateUser" />
+              <span class="form-tip">LDAP 用户首次登录时自动在系统中创建本地账号</span>
+            </el-form-item>
+            <el-form-item label="默认角色">
+              <el-select v-model="ldapConfig.defaultRoleId" placeholder="请选择" clearable>
+                <el-option
+                  v-for="role in roles"
+                  :key="role.id"
+                  :label="role.name"
+                  :value="role.id"
+                />
+              </el-select>
+              <span class="form-tip">LDAP 用户自动创建时分配的默认角色</span>
+            </el-form-item>
+            <el-form-item label="默认部门">
+              <el-select v-model="ldapConfig.defaultDeptId" placeholder="请选择" clearable>
+                <el-option
+                  v-for="dept in departments"
+                  :key="dept.id"
+                  :label="dept.name"
+                  :value="dept.id"
+                />
+              </el-select>
+              <span class="form-tip">LDAP 用户自动创建时分配的默认部门</span>
+            </el-form-item>
           </el-form>
         </div>
       </div>
@@ -129,17 +285,23 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   Setting, Check, HomeFilled, Lock,
-  Edit, Plus, Delete
+  Edit, Plus, Delete, Connection,
+  CircleCheckFilled, CircleCloseFilled, Key
 } from '@element-plus/icons-vue'
+import request from '@/utils/request'
 import {
   getAllConfig,
   saveBasicConfig,
   saveSecurityConfig,
-  uploadLogo
+  uploadLogo,
+  getLDAPConfig,
+  saveLDAPConfig,
+  testLDAPConnection,
+  type LDAPConfig
 } from '@/api/system'
 import { useSystemStore } from '@/stores/system'
 
@@ -149,7 +311,8 @@ const activeNav = ref(0)
 
 const navItems = [
   { label: '基础配置', icon: 'HomeFilled' },
-  { label: '安全配置', icon: 'Lock' }
+  { label: '安全配置', icon: 'Lock' },
+  { label: 'LDAP 配置', icon: 'Connection' }
 ]
 
 const config = reactive({
@@ -163,8 +326,144 @@ const config = reactive({
   sessionTimeout: 3600,
   enableCaptcha: true,
   maxLoginAttempts: 5,
-  lockoutDuration: 300
+  lockoutDuration: 300,
+
+  // MFA配置
+  mfaEnabled: false,
+  mfaEnforced: false,
+  mfaType: 'totp',
+  mfaSkipDuration: 2592000
 })
+
+// LDAP 配置
+const ldapConfig = reactive<LDAPConfig>({
+  enabled: false,
+  host: '',
+  port: 389,
+  useTls: false,
+  startTls: false,
+  skipVerify: false,
+  bindDn: '',
+  bindPassword: '',
+  baseDn: '',
+  userFilter: '(uid=%s)',
+  attrUsername: 'uid',
+  attrEmail: 'mail',
+  attrRealName: 'cn',
+  attrPhone: 'telephoneNumber',
+  defaultRoleId: 0,
+  defaultDeptId: 0,
+  autoCreateUser: true
+})
+
+// LDAP 连接方式
+const ldapConnectionMode = computed(() => {
+  if (ldapConfig.useTls) return 'ldaps'
+  if (ldapConfig.startTls) return 'starttls'
+  return 'plain'
+})
+
+const handleConnectionModeChange = (mode: string) => {
+  ldapConfig.useTls = mode === 'ldaps'
+  ldapConfig.startTls = mode === 'starttls'
+  // 自动调整端口
+  if (mode === 'ldaps' && ldapConfig.port === 389) {
+    ldapConfig.port = 636
+  } else if (mode !== 'ldaps' && ldapConfig.port === 636) {
+    ldapConfig.port = 389
+  }
+}
+
+const ldapTesting = ref(false)
+const ldapTestResult = ref<{ success: boolean; message: string; userCount?: number } | null>(null)
+const roles = ref<{ id: number; name: string }[]>([])
+const departments = ref<{ id: number; name: string }[]>([])
+
+// 加载角色和部门列表（用于LDAP默认分配）
+const loadRolesAndDepts = async () => {
+  try {
+    const [rolesRes, deptsRes]: any[] = await Promise.all([
+      request.get('/api/v1/roles/all'),
+      request.get('/api/v1/departments/tree')
+    ])
+    if (Array.isArray(rolesRes)) {
+      roles.value = rolesRes.map((r: any) => ({ id: r.ID || r.id, name: r.name || r.Name }))
+    }
+    if (Array.isArray(deptsRes)) {
+      // 扁平化部门树（部门VO字段: id, deptName, children）
+      const flatDepts: { id: number; name: string }[] = []
+      const flatten = (items: any[], prefix = '') => {
+        for (const item of items) {
+          const name = item.deptName || item.name || ''
+          const id = item.id || item.ID
+          if (id) {
+            const displayName = prefix ? prefix + ' / ' + name : name
+            flatDepts.push({ id, name: displayName || `部门${id}` })
+          }
+          if (item.children && item.children.length > 0) {
+            flatten(item.children, prefix ? prefix + ' / ' + name : name)
+          }
+        }
+      }
+      flatten(deptsRes)
+      departments.value = flatDepts
+    }
+  } catch (error) {
+    // 静默处理
+  }
+}
+
+// 加载LDAP配置
+const loadLDAPConfig = async () => {
+  try {
+    const res: any = await getLDAPConfig()
+    if (res) {
+      Object.assign(ldapConfig, res)
+    }
+  } catch (error) {
+    console.error('加载LDAP配置失败', error)
+  }
+}
+
+// 测试LDAP连接
+const handleTestLDAP = async () => {
+  if (!ldapConfig.host || !ldapConfig.bindDn || !ldapConfig.baseDn) {
+    ElMessage.warning('请先填写服务器地址、Bind DN 和 Base DN')
+    return
+  }
+
+  ldapTesting.value = true
+  ldapTestResult.value = null
+  try {
+    const res: any = await testLDAPConnection({ ...ldapConfig })
+    ldapTestResult.value = {
+      success: true,
+      message: res?.message || '连接成功',
+      userCount: res?.userCount
+    }
+    ElMessage.success('LDAP连接测试成功')
+  } catch (error: any) {
+    ldapTestResult.value = {
+      success: false,
+      message: error?.message || '连接失败'
+    }
+  } finally {
+    ldapTesting.value = false
+  }
+}
+
+// 保存LDAP配置
+const handleSaveLDAP = async () => {
+  saving.value = true
+  try {
+    await saveLDAPConfig({ ...ldapConfig })
+    ElMessage.success('LDAP配置保存成功')
+  } catch (error) {
+    ElMessage.error('LDAP配置保存失败')
+  } finally {
+    saving.value = false
+  }
+}
 
 const loadConfig = async () => {
   try {
@@ -183,6 +482,11 @@ const loadConfig = async () => {
         config.enableCaptcha = res.security.enableCaptcha !== false
         config.maxLoginAttempts = res.security.maxLoginAttempts || 5
         config.lockoutDuration = res.security.lockoutDuration || 300
+        // MFA配置
+        config.mfaEnabled = res.security.mfaEnabled || false
+        config.mfaEnforced = res.security.mfaEnforced || false
+        config.mfaType = res.security.mfaType || 'totp'
+        config.mfaSkipDuration = res.security.mfaSkipDuration || 2592000
       }
     }
   } catch (error) {
@@ -193,28 +497,37 @@ const loadConfig = async () => {
 const handleSave = async () => {
   saving.value = true
   try {
-    // 保存基础配置
-    await saveBasicConfig({
-      systemName: config.systemName,
-      systemLogo: config.systemLogo,
-      systemDescription: config.systemDescription
-    })
-
-    // 保存安全配置
-    await saveSecurityConfig({
-      passwordMinLength: config.passwordMinLength,
-      sessionTimeout: config.sessionTimeout,
-      enableCaptcha: config.enableCaptcha,
-      maxLoginAttempts: config.maxLoginAttempts,
-      lockoutDuration: config.lockoutDuration
-    })
-
-    // 更新全局系统配置（更新侧边栏Logo、网页标题、favicon）
-    systemStore.updateConfig({
-      systemName: config.systemName,
-      systemLogo: config.systemLogo,
-      systemDescription: config.systemDescription
-    })
+    if (activeNav.value === 0) {
+      // 保存基础配置
+      await saveBasicConfig({
+        systemName: config.systemName,
+        systemLogo: config.systemLogo,
+        systemDescription: config.systemDescription
+      })
+      // 更新全局系统配置（更新侧边栏Logo、网页标题、favicon）
+      systemStore.updateConfig({
+        systemName: config.systemName,
+        systemLogo: config.systemLogo,
+        systemDescription: config.systemDescription
+      })
+    } else if (activeNav.value === 1) {
+      // 保存安全配置
+      await saveSecurityConfig({
+        passwordMinLength: config.passwordMinLength,
+        sessionTimeout: config.sessionTimeout,
+        enableCaptcha: config.enableCaptcha,
+        maxLoginAttempts: config.maxLoginAttempts,
+        lockoutDuration: config.lockoutDuration,
+        // MFA配置
+        mfaEnabled: config.mfaEnabled,
+        mfaEnforced: config.mfaEnforced,
+        mfaType: config.mfaType,
+        mfaSkipDuration: config.mfaSkipDuration
+      })
+    } else if (activeNav.value === 2) {
+      // 保存LDAP配置
+      await saveLDAPConfig({ ...ldapConfig })
+    }
 
     ElMessage.success('配置保存成功')
   } catch (error) {
@@ -258,6 +571,8 @@ const removeLogo = () => {
 
 onMounted(() => {
   loadConfig()
+  loadLDAPConfig()
+  loadRolesAndDepts()
 })
 </script>
 
@@ -622,5 +937,41 @@ onMounted(() => {
   .header-actions .black-button {
     width: 100%;
   }
+}
+
+/* LDAP 测试结果 */
+.ldap-test-result {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 12px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.ldap-test-result.success {
+  color: #67c23a;
+  background: #f0f9eb;
+}
+
+.ldap-test-result.error {
+  color: #f56c6c;
+  background: #fef0f0;
+}
+
+/* LDAP 分割线 */
+:deep(.el-divider__text) {
+  font-size: 13px;
+  font-weight: 600;
+  color: #606266;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.divider-icon {
+  color: #d4af37;
+  font-size: 16px;
 }
 </style>

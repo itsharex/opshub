@@ -103,12 +103,11 @@ func (uc *UserUseCase) UpdatePassword(ctx context.Context, userID uint, oldPassw
 		return err
 	}
 
-	user.Password = string(hashedPassword)
-	return uc.userRepo.Update(ctx, user)
+	return uc.userRepo.UpdatePassword(ctx, userID, string(hashedPassword))
 }
 
 func (uc *UserUseCase) ResetPassword(ctx context.Context, userID uint, newPassword string) error {
-	user, err := uc.userRepo.GetByID(ctx, userID)
+	_, err := uc.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		return errors.New("用户不存在")
 	}
@@ -118,8 +117,7 @@ func (uc *UserUseCase) ResetPassword(ctx context.Context, userID uint, newPasswo
 		return err
 	}
 
-	user.Password = string(hashedPassword)
-	return uc.userRepo.Update(ctx, user)
+	return uc.userRepo.UpdatePassword(ctx, userID, string(hashedPassword))
 }
 
 type RoleUseCase struct {
